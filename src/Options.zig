@@ -12,11 +12,20 @@ pub const Inline = struct {
 };
 
 pub const Options = struct {
-    browser: ?Cookie.Browser = null,
+    browsers: []const Cookie.Browser = &.{},
     mode: Mode = .merge,
     inline_input: Inline = .{},
     url: ?[]const u8 = null,
     origins: []const []const u8 = &.{},
     names: []const []const u8 = &.{},
     include_expired: bool = false,
+    all_domains: bool = false,
+    firefox_profile: ?[]const u8 = null,
+    firefox_profile_root: ?[]const u8 = null,
+    firefox_cookies_file: ?[]const u8 = null,
+    safari_cookies_file: ?[]const u8 = null,
+    safari_cookies_root: ?[]const u8 = null,
+    chrome_profile: ?[]const u8 = null,
+    chrome_profile_root: ?[]const u8 = null,
+    chrome_cookies_db: ?[]const u8 = null,
 };
