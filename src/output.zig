@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 pub fn writeAtomically(path: []const u8, data: []const u8) !void {
     if (std.fs.path.dirname(path)) |parent| {
@@ -10,7 +11,10 @@ pub fn writeAtomically(path: []const u8, data: []const u8) !void {
 
     var tmp_file = try createFile(tmp_path);
     defer tmp_file.close();
-    try tmp_file.chmod(0o600);
+    if (builtin.os.tag != .windows) {
+        // Windows path keeps atomic write but skips POSIX mode bits.
+        try tmp_file.chmod(0o600);
+    }
     try tmp_file.writeAll(data);
     try tmp_file.sync();
     try rename(tmp_path, path);
