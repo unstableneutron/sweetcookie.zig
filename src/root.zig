@@ -6,6 +6,8 @@ const ResultMod = @import("Result.zig");
 const inline_src = @import("inline_src.zig");
 const filter = @import("filter.zig");
 const dedupe = @import("dedupe.zig");
+pub const exporter = @import("exporter.zig");
+pub const output = @import("output.zig");
 
 pub const Browser = CookieMod.Browser;
 pub const SameSite = CookieMod.SameSite;
@@ -92,4 +94,16 @@ test "public API get runs inline then filter and dedupe" {
     try std.testing.expectEqual(@as(usize, 1), result.cookies.len);
     try std.testing.expectEqualStrings("2", result.cookies[0].value);
     try std.testing.expectEqual(@as(usize, 0), result.warnings.len);
+}
+
+test "exporter writes lightpanda json array" {
+    const cookies = try std.testing.allocator.alloc(Cookie, 1);
+    defer std.testing.allocator.free(cookies);
+    cookies[0] = try Cookie.fromRawDomain(std.testing.allocator, ".example.com", "a", "1", "/", 1, false, false, null, .{});
+    defer cookies[0].deinit(std.testing.allocator);
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+    try exporter.writeLightpandaJson(out.writer(std.testing.allocator), cookies);
+    try std.testing.expect(out.items.len > 0);
 }

@@ -1,14 +1,12 @@
 const std = @import("std");
-const cli = @import("cli");
 const sweetcookie = @import("sweetcookie");
 
 const version = "0.0.0";
 
-var export_format: []const u8 = "lightpanda-json";
-var header_url: ?[]const u8 = null;
-
 pub fn main() !void {
-    const allocator = std.heap.page_allocator;
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
@@ -17,146 +15,34 @@ pub fn main() !void {
         std.process.exit(2);
     }
 
-    if (std.mem.eql(u8, args[1], "--version")) {
+    const cmd = args[1];
+    if (std.mem.eql(u8, cmd, "--version")) {
+        try printVersion();
+        return;
+    }
+    if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "-h") or std.mem.eql(u8, cmd, "help")) {
+        try printHelp();
+        return;
+    }
+    if (std.mem.eql(u8, cmd, "version")) {
         try printVersion();
         return;
     }
 
-    try rejectUnsupportedArgs(args);
-
-    var runner = try cli.AppRunner.init(allocator);
-    const app = try makeApp(&runner);
-    try runner.run(&app);
-}
-
-fn rejectUnsupportedArgs(args: []const [:0]u8) !void {
-    const command = args[1];
-
-    if (std.mem.eql(u8, command, "--help") or
-        std.mem.eql(u8, command, "-h") or
-        std.mem.eql(u8, command, "version") or
-        std.mem.eql(u8, command, "help"))
-    {
+    if (std.mem.eql(u8, cmd, "export")) {
+        try runExport(allocator, args[2..]);
         return;
     }
-
-    if (std.mem.eql(u8, command, "export")) {
-        var i: usize = 2;
-        while (i < args.len) : (i += 1) {
-            const arg = args[i];
-            if (std.mem.eql(u8, arg, "--format")) {
-                i += 1;
-                if (i >= args.len) {
-                    try printErr("option '--format' requires value\n", .{});
-                    std.process.exit(2);
-                }
-            } else if (!std.mem.startsWith(u8, arg, "--format=")) {
-                try printErr("unknown option '{s}'\n", .{arg});
-                std.process.exit(2);
-            }
-        }
+    if (std.mem.eql(u8, cmd, "header")) {
+        try runHeader(allocator, args[2..]);
         return;
     }
-
-    if (std.mem.eql(u8, command, "header")) {
-        var i: usize = 2;
-        while (i < args.len) : (i += 1) {
-            const arg = args[i];
-            if (std.mem.eql(u8, arg, "--url")) {
-                i += 1;
-                if (i >= args.len) {
-                    try printErr("option '--url' requires value\n", .{});
-                    std.process.exit(2);
-                }
-            } else if (!std.mem.startsWith(u8, arg, "--url=")) {
-                try printErr("unknown option '{s}'\n", .{arg});
-                std.process.exit(2);
-            }
-        }
-        return;
-    }
-
-    if (std.mem.startsWith(u8, command, "-")) {
-        try printErr("unknown option '{s}'\n", .{command});
+    if (std.mem.startsWith(u8, cmd, "-")) {
+        try printErr("unknown option '{s}'\n", .{cmd});
     } else {
-        try printErr("unknown subcommand '{s}'\n", .{command});
+        try printErr("unknown subcommand '{s}'\n", .{cmd});
     }
     std.process.exit(2);
-}
-
-fn makeApp(runner: *cli.AppRunner) !cli.App {
-    const export_options = try runner.allocOptions(&.{
-        .{
-            .long_name = "format",
-            .help = "Output format.",
-            .value_ref = runner.mkRef(&export_format),
-        },
-    });
-
-    const header_options = try runner.allocOptions(&.{
-        .{
-            .long_name = "url",
-            .help = "Request URL for Cookie header output.",
-            .value_ref = runner.mkRef(&header_url),
-        },
-    });
-
-    const commands = try runner.allocCommands(&.{
-        .{
-            .name = "export",
-            .description = cli.Description{ .one_line = "Export cookies." },
-            .options = export_options,
-            .target = cli.CommandTarget{ .action = cli.CommandAction{ .exec = exportCommand } },
-        },
-        .{
-            .name = "header",
-            .description = cli.Description{ .one_line = "Print a Cookie header." },
-            .options = header_options,
-            .target = cli.CommandTarget{ .action = cli.CommandAction{ .exec = headerCommand } },
-        },
-        .{
-            .name = "version",
-            .description = cli.Description{ .one_line = "Print the sweetcookie version." },
-            .target = cli.CommandTarget{ .action = cli.CommandAction{ .exec = versionCommand } },
-        },
-        .{
-            .name = "help",
-            .description = cli.Description{ .one_line = "Print help." },
-            .target = cli.CommandTarget{ .action = cli.CommandAction{ .exec = helpCommand } },
-        },
-    });
-
-    return cli.App{
-        .command = cli.Command{
-            .name = "sweetcookie",
-            .description = cli.Description{ .one_line = "Extract and export browser cookies." },
-            .target = cli.CommandTarget{ .subcommands = commands },
-        },
-        .version = version,
-        .help_config = .{ .color_usage = .never },
-    };
-}
-
-fn exportCommand() !void {
-    _ = export_format;
-    _ = sweetcookie.Options{};
-    try printErr("no input source provided\n", .{});
-    std.process.exit(1);
-}
-
-fn headerCommand() !void {
-    if (header_url == null) {
-        try printErr("--url is required\n", .{});
-        std.process.exit(1);
-    }
-}
-
-fn versionCommand() !void {
-    try printVersion();
-}
-
-fn helpCommand() !void {
-    try printHelp();
 }
 
 fn printVersion() !void {
@@ -191,21 +77,152 @@ fn printHelp() !void {
     try stdout.flush();
 }
 
+fn runExport(allocator: std.mem.Allocator, args: []const [:0]u8) !void {
+    var fmt: []const u8 = "lightpanda-json";
+    var out_path: ?[]const u8 = null;
+    var inline_json: ?[]const u8 = null;
+    var inline_base64: ?[]const u8 = null;
+    var inline_file: ?[]const u8 = null;
+    var url: ?[]const u8 = null;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--format")) {
+            i += 1;
+            if (i >= args.len) return usageError("option '--format' requires value\n");
+            fmt = args[i];
+        } else if (std.mem.eql(u8, arg, "--output")) {
+            i += 1;
+            if (i >= args.len) return usageError("option '--output' requires value\n");
+            out_path = args[i];
+        } else if (std.mem.eql(u8, arg, "--inline-json")) {
+            i += 1;
+            if (i >= args.len) return usageError("option '--inline-json' requires value\n");
+            inline_json = args[i];
+        } else if (std.mem.eql(u8, arg, "--inline-base64")) {
+            i += 1;
+            if (i >= args.len) return usageError("option '--inline-base64' requires value\n");
+            inline_base64 = args[i];
+        } else if (std.mem.eql(u8, arg, "--inline-file")) {
+            i += 1;
+            if (i >= args.len) return usageError("option '--inline-file' requires value\n");
+            inline_file = args[i];
+        } else if (std.mem.eql(u8, arg, "--url")) {
+            i += 1;
+            if (i >= args.len) return usageError("option '--url' requires value\n");
+            url = args[i];
+        } else {
+            return usageErrorFmt("unknown option '{s}'\n", .{arg});
+        }
+    }
+
+    if (inline_json == null and inline_base64 == null and inline_file == null) {
+        try printErr("no input source provided\n", .{});
+        std.process.exit(1);
+    }
+
+    const result = sweetcookie.get(allocator, .{
+        .inline_input = .{ .json = inline_json, .base64 = inline_base64, .file = inline_file },
+        .url = url,
+    }) catch |err| return runtimeError(err);
+    defer result.deinit(allocator);
+
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    const writer = buf.writer(allocator);
+    if (std.mem.eql(u8, fmt, "lightpanda-json")) {
+        try sweetcookie.exporter.writeLightpandaJson(writer, result.cookies);
+    } else if (std.mem.eql(u8, fmt, "sweet-cookie-json")) {
+        try sweetcookie.exporter.writeSweetCookieJson(writer, result.cookies, .{ .generated_at_unix = std.time.timestamp(), .target_url = url });
+    } else if (std.mem.eql(u8, fmt, "cookie-header")) {
+        const header_url = url orelse {
+            try printErr("--url is required for cookie-header format\n", .{});
+            std.process.exit(1);
+        };
+        try sweetcookie.exporter.writeCookieHeader(writer, result.cookies, header_url);
+    } else {
+        return usageErrorFmt("unknown format '{s}'\n", .{fmt});
+    }
+
+    if (out_path) |path| {
+        try sweetcookie.output.writeAtomically(path, buf.items);
+        return;
+    }
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
+    const stdout = &stdout_writer.interface;
+    try stdout.writeAll(buf.items);
+    try stdout.writeByte('\n');
+    try stdout.flush();
+}
+
+fn runHeader(allocator: std.mem.Allocator, args: []const [:0]u8) !void {
+    var url: ?[]const u8 = null;
+    var inline_json: ?[]const u8 = null;
+    var inline_base64: ?[]const u8 = null;
+    var inline_file: ?[]const u8 = null;
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--url")) {
+            i += 1;
+            if (i >= args.len) return usageError("option '--url' requires value\n");
+            url = args[i];
+        } else if (std.mem.eql(u8, arg, "--inline-json")) {
+            i += 1;
+            if (i >= args.len) return usageError("option '--inline-json' requires value\n");
+            inline_json = args[i];
+        } else if (std.mem.eql(u8, arg, "--inline-base64")) {
+            i += 1;
+            if (i >= args.len) return usageError("option '--inline-base64' requires value\n");
+            inline_base64 = args[i];
+        } else if (std.mem.eql(u8, arg, "--inline-file")) {
+            i += 1;
+            if (i >= args.len) return usageError("option '--inline-file' requires value\n");
+            inline_file = args[i];
+        } else {
+            return usageErrorFmt("unknown option '{s}'\n", .{arg});
+        }
+    }
+    if (url == null) {
+        try printErr("--url is required\n", .{});
+        std.process.exit(1);
+    }
+
+    const result = sweetcookie.get(allocator, .{
+        .inline_input = .{ .json = inline_json, .base64 = inline_base64, .file = inline_file },
+    }) catch |err| return runtimeError(err);
+    defer result.deinit(allocator);
+
+    var stdout_buf: [4096]u8 = undefined;
+    var stdout_writer = std.fs.File.stdout().writer(&stdout_buf);
+    const stdout = &stdout_writer.interface;
+    try sweetcookie.exporter.writeCookieHeader(stdout, result.cookies, url.?);
+    try stdout.writeByte('\n');
+    try stdout.flush();
+}
+
+fn runtimeError(err: anyerror) noreturn {
+    printErr("runtime error: {s}\n", .{@errorName(err)}) catch {};
+    std.process.exit(1);
+}
+
+fn usageError(msg: []const u8) noreturn {
+    printErr("{s}", .{msg}) catch {};
+    std.process.exit(2);
+}
+
+fn usageErrorFmt(comptime fmt: []const u8, args: anytype) noreturn {
+    printErr(fmt, args) catch {};
+    std.process.exit(2);
+}
+
 fn printErr(comptime fmt: []const u8, args: anytype) !void {
     var buffer: [256]u8 = undefined;
     var writer = std.fs.File.stderr().writer(&buffer);
     const stderr = &writer.interface;
     try stderr.print(fmt, args);
     try stderr.flush();
-}
-
-test "CLI imports sam701 zig-cli API types" {
-    const app = cli.App{
-        .command = cli.Command{
-            .name = "sweetcookie",
-            .target = cli.CommandTarget{ .subcommands = &.{} },
-        },
-    };
-
-    try std.testing.expectEqualStrings("sweetcookie", app.command.name);
 }
