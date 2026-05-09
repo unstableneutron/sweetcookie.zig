@@ -1,0 +1,24 @@
+.{
+    .name = .sweetcookie,
+    .version = "0.0.0",
+    .fingerprint = 0xb5289e36379153e7,
+    .minimum_zig_version = "0.15.2",
+    .dependencies = .{
+        .sqlite_amalgamation = .{
+            .url = "https://www.sqlite.org/2026/sqlite-amalgamation-3530100.zip",
+            .hash = "N-V-__8AAK_4rQDqNybRFADVHf986hCbR9ln5ez1iWpmBV5L",
+        },
+        .cli = .{
+            .url = "https://github.com/sam701/zig-cli/archive/9e1189448012dac74ae01f1c901058b6f974ee87.tar.gz",
+            .hash = "cli-0.10.0-2eKe_5kEAQBeHqKxUHNTGnETzu81rqKWwT1WPt1jXBt0",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "tests",
+        "README.md",
+        "LICENSE",
+    },
+}
