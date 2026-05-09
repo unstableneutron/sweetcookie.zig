@@ -1,68 +1,25 @@
 const std = @import("std");
 
-pub const Browser = enum {
-    firefox,
-    safari,
-    chrome,
-    chromium,
-    edge,
-    brave,
-    vivaldi,
-    opera,
-    arc,
-};
+const CookieMod = @import("Cookie.zig");
+const OptionsMod = @import("Options.zig");
+const ResultMod = @import("Result.zig");
 
-pub const SameSite = enum {
-    Strict,
-    Lax,
-    None,
-};
+pub const Browser = CookieMod.Browser;
+pub const SameSite = CookieMod.SameSite;
+pub const Source = CookieMod.Source;
+pub const Cookie = CookieMod.Cookie;
 
-pub const Mode = enum {
-    merge,
-    replace,
-};
+pub const Mode = OptionsMod.Mode;
+pub const Options = OptionsMod.Options;
 
-pub const Cookie = struct {
-    name: []const u8 = "",
-    value: []const u8 = "",
-    domain: []const u8 = "",
-    raw_domain: []const u8 = "",
-    host_only: bool = true,
-    path: []const u8 = "/",
-    expires: ?i64 = null,
-    secure: bool = false,
-    http_only: bool = false,
-    same_site: ?SameSite = null,
-    browser: ?Browser = null,
-};
-
-pub const Options = struct {
-    browser: ?Browser = null,
-    mode: Mode = .merge,
-};
-
-pub const Warning = struct {
-    kind: []const u8,
-    message: []const u8,
-};
-
-pub const Result = struct {
-    cookies: []const Cookie,
-    warnings: []const Warning,
-
-    pub fn deinit(self: Result, allocator: std.mem.Allocator) void {
-        _ = self;
-        _ = allocator;
-    }
-};
+pub const Warning = ResultMod.Warning;
+pub const Result = ResultMod.Result;
 
 pub fn get(allocator: std.mem.Allocator, options: Options) !Result {
-    _ = allocator;
     _ = options;
     return .{
-        .cookies = &.{},
-        .warnings = &.{},
+        .cookies = try allocator.alloc(Cookie, 0),
+        .warnings = try allocator.alloc(Warning, 0),
     };
 }
 
