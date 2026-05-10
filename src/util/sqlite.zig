@@ -102,6 +102,7 @@ pub const Stmt = struct {
     pub fn columnBlob(self: *Stmt, i: i32) ?[]const u8 {
         const stmt = self.handle orelse return null;
         if (!validColumn(stmt, i)) return null;
+        if (c.sqlite3_column_type(stmt, i) == c.SQLITE_NULL) return null;
         const len: usize = @intCast(c.sqlite3_column_bytes(stmt, i));
         if (len == 0) return &.{};
         const ptr = c.sqlite3_column_blob(stmt, i) orelse return null;
@@ -169,6 +170,28 @@ test "openReadOnly prepares and steps typed SELECT columns" {
     try std.testing.expectEqualStrings("sid", stmt.columnText(0).?);
     try std.testing.expectEqual(@as(i64, 42), stmt.columnInt64(1));
     try std.testing.expectEqualSlices(u8, &.{ 0x01, 0x02, 0xff }, stmt.columnBlob(2).?);
+    try std.testing.expect(!try stmt.step());
+}
+
+test "columnBlob distinguishes SQL NULL from zero-length BLOB" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const tmp_root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_root);
+    const db_path = try std.fs.path.join(std.testing.allocator, &.{ tmp_root, "nullable-blob.sqlite" });
+    defer std.testing.allocator.free(db_path);
+    try createSqliteDb(db_path, "CREATE TABLE t(id INTEGER, payload BLOB); INSERT INTO t VALUES(1, NULL), (2, X'');");
+
+    var db = try Db.openReadOnly(db_path);
+    defer db.close();
+    var stmt = try db.prepare("SELECT payload FROM t ORDER BY id");
+    defer stmt.finalize();
+
+    try std.testing.expect(try stmt.step());
+    try std.testing.expect(stmt.columnBlob(0) == null);
+    try std.testing.expect(try stmt.step());
+    const empty_blob = stmt.columnBlob(0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 0), empty_blob.len);
     try std.testing.expect(!try stmt.step());
 }
 

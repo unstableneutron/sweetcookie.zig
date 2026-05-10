@@ -44,7 +44,7 @@ pub fn readCookies(
         const host = stmt.columnText(0) orelse "";
         const name = stmt.columnText(1) orelse "";
         const plain_value = stmt.columnText(2) orelse "";
-        const encrypted = stmt.columnBlob(3) orelse &.{};
+        const encrypted = stmt.columnBlob(3);
         const path = stmt.columnText(4) orelse "/";
         const expires_utc = stmt.columnInt64(5);
         const secure = stmt.columnInt64(6) != 0;
@@ -89,7 +89,7 @@ fn readMetaVersion(db: *sqlite.Db) !i64 {
 
 fn valueForRow(
     allocator: std.mem.Allocator,
-    encrypted: []const u8,
+    encrypted: ?[]const u8,
     plain_value: []const u8,
     host: []const u8,
     meta_version: i64,
@@ -97,9 +97,10 @@ fn valueForRow(
     storage_key: *?[]u8,
     warnings: *std.ArrayList(Warning),
 ) !?[]u8 {
-    if (encrypted.len == 0) return try allocator.dupe(u8, plain_value);
+    const encrypted_value = encrypted orelse return try allocator.dupe(u8, plain_value);
+    if (encrypted_value.len == 0) return try allocator.dupe(u8, plain_value);
     if (storage_key.* == null) storage_key.* = try getStorageKey(allocator, browser);
-    const decrypted = decryptChromiumValue(allocator, encrypted, storage_key.*.?, host, meta_version) catch |err| {
+    const decrypted = decryptChromiumValue(allocator, encrypted_value, storage_key.*.?, host, meta_version) catch |err| {
         try appendDecryptWarning(allocator, warnings, err);
         return null;
     };
