@@ -67,19 +67,12 @@ pub fn build(b: *std.Build) void {
 
     const run_lib_tests = b.addRunArtifact(lib_tests);
     const run_exe_tests = b.addRunArtifact(exe_tests);
-    const integration_tests_mod = b.createModule(.{
-        .root_source_file = b.path("tests/integration/cli_plumbing_test.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const integration_tests = b.addTest(.{ .root_module = integration_tests_mod });
-    const run_integration_tests = b.addRunArtifact(integration_tests);
-    run_integration_tests.step.dependOn(b.getInstallStep());
-
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
-    test_step.dependOn(&run_integration_tests.step);
+    addIntegrationTest(b, test_step, "tests/integration/cli_plumbing_test.zig", target, optimize);
+    addIntegrationTest(b, test_step, "tests/integration/cross_test.zig", target, optimize);
+    addIntegrationTest(b, test_step, "tests/integration/output_mode_test.zig", target, optimize);
 
     const api_smoke_mod = b.createModule(.{
         .root_source_file = b.path("tests/api_smoke.zig"),
@@ -101,6 +94,24 @@ pub fn build(b: *std.Build) void {
     const lint = b.addSystemCommand(&.{ "zig", "fmt", "--check", "src", "tests", "build.zig" });
     const lint_step = b.step("lint", "Check Zig formatting");
     lint_step.dependOn(&lint.step);
+}
+
+fn addIntegrationTest(
+    b: *std.Build,
+    test_step: *std.Build.Step,
+    path: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) void {
+    const integration_tests_mod = b.createModule(.{
+        .root_source_file = b.path(path),
+        .target = target,
+        .optimize = optimize,
+    });
+    const integration_tests = b.addTest(.{ .root_module = integration_tests_mod });
+    const run_integration_tests = b.addRunArtifact(integration_tests);
+    run_integration_tests.step.dependOn(b.getInstallStep());
+    test_step.dependOn(&run_integration_tests.step);
 }
 
 fn linkPlatformLibraries(module: *std.Build.Module, target: std.Build.ResolvedTarget) void {
