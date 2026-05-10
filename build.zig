@@ -74,6 +74,7 @@ pub fn build(b: *std.Build) void {
     addIntegrationTest(b, test_step, "tests/integration/cli_plumbing_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/cross_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/output_mode_test.zig", target, optimize);
+    addIntegrationTest(b, test_step, "tests/fixtures/sqlite_fixture_tests.zig", target, optimize);
 
     const api_smoke_mod = b.createModule(.{
         .root_source_file = b.path("tests/api_smoke.zig"),
