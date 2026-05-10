@@ -74,9 +74,9 @@ pub fn build(b: *std.Build) void {
     });
     const integration_tests = b.addTest(.{ .root_module = integration_tests_mod });
     const run_integration_tests = b.addRunArtifact(integration_tests);
+    run_integration_tests.step.dependOn(b.getInstallStep());
 
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(b.getInstallStep());
     test_step.dependOn(&run_lib_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(&run_integration_tests.step);
