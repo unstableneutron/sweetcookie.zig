@@ -53,6 +53,21 @@ pub fn get(allocator: std.mem.Allocator, options: Options) !Result {
         freeWarnings(allocator, warnings);
     }
 
+    if (hasBrowser(options.browsers, .safari)) {
+        const parsed = try safari.root.collect(allocator, options);
+        cookies = try appendCookies(allocator, cookies, parsed);
+    }
+    if (hasBrowser(options.browsers, .firefox)) {
+        const parsed = try firefox.root.collect(allocator, options);
+        cookies = try appendCookies(allocator, cookies, parsed);
+    }
+    for (options.browsers) |browser| {
+        if (isChromium(browser)) {
+            const parsed = try chromium.root.collect(allocator, options, browser);
+            cookies = try appendCookies(allocator, cookies, parsed.cookies);
+            warnings = try appendWarnings(allocator, warnings, parsed.warnings);
+        }
+    }
     if (options.inline_input.json) |json| {
         const parsed = try inline_src.parseInlineJson(allocator, json);
         cookies = try appendCookies(allocator, cookies, parsed);
@@ -65,23 +80,6 @@ pub fn get(allocator: std.mem.Allocator, options: Options) !Result {
         const parsed = try inline_src.parseInlineFile(allocator, path);
         cookies = try appendCookies(allocator, cookies, parsed);
     }
-    for (options.browsers) |browser| {
-        switch (browser) {
-            .firefox => {
-                const parsed = try firefox.root.collect(allocator, options);
-                cookies = try appendCookies(allocator, cookies, parsed);
-            },
-            .safari => {
-                const parsed = try safari.root.collect(allocator, options);
-                cookies = try appendCookies(allocator, cookies, parsed);
-            },
-            .chrome, .chromium, .edge, .brave, .vivaldi, .opera, .arc => {
-                const parsed = try chromium.root.collect(allocator, options, browser);
-                cookies = try appendCookies(allocator, cookies, parsed.cookies);
-                warnings = try appendWarnings(allocator, warnings, parsed.warnings);
-            },
-        }
-    }
 
     const by_url = try filter.filterByUrl(allocator, cookies, options.url);
     freeCookies(allocator, cookies);
@@ -91,12 +89,28 @@ pub fn get(allocator: std.mem.Allocator, options: Options) !Result {
     freeCookies(allocator, by_origins);
     const non_expired = try filter.filterExpired(allocator, by_names, options.include_expired, std.time.timestamp());
     freeCookies(allocator, by_names);
-    cookies = try dedupe.dedupeLastWins(allocator, non_expired);
+    cookies = switch (options.mode) {
+        .merge, .replace => try dedupe.dedupeLastWins(allocator, non_expired),
+    };
     freeCookies(allocator, non_expired);
 
     return .{
         .cookies = cookies,
         .warnings = warnings,
+    };
+}
+
+fn hasBrowser(browsers: []const Browser, wanted: Browser) bool {
+    for (browsers) |browser| {
+        if (browser == wanted) return true;
+    }
+    return false;
+}
+
+fn isChromium(browser: Browser) bool {
+    return switch (browser) {
+        .chrome, .chromium, .edge, .brave, .vivaldi, .opera, .arc => true,
+        else => false,
     };
 }
 
