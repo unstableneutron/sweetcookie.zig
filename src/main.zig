@@ -8,6 +8,12 @@ const Parsed = struct {
     format: []const u8 = "lightpanda-json",
     output: ?[]const u8 = null,
     debug: bool = false,
+
+    fn deinit(self: Parsed, allocator: std.mem.Allocator) void {
+        allocator.free(self.options.origins);
+        allocator.free(self.options.names);
+        allocator.free(self.options.browsers);
+    }
 };
 
 pub fn main() !void {
@@ -33,11 +39,19 @@ pub fn main() !void {
     if (std.mem.eql(u8, args[1], "version")) return printVersion();
     if (std.mem.eql(u8, args[1], "export")) {
         const parsed = parseArgs(allocator, args[2..]) catch |err| usageErrorFmt("usage error: {s}\n", .{@errorName(err)});
-        return runExport(allocator, parsed) catch |err| runtimeError(err);
+        defer parsed.deinit(allocator);
+        return runExport(allocator, parsed) catch |err| {
+            renderRuntimeError(allocator, err, parsed) catch {};
+            std.process.exit(1);
+        };
     }
     if (std.mem.eql(u8, args[1], "header")) {
         const parsed = parseArgs(allocator, args[2..]) catch |err| usageErrorFmt("usage error: {s}\n", .{@errorName(err)});
-        return runHeader(allocator, parsed) catch |err| runtimeError(err);
+        defer parsed.deinit(allocator);
+        return runHeader(allocator, parsed) catch |err| {
+            renderRuntimeError(allocator, err, parsed) catch {};
+            std.process.exit(1);
+        };
     }
     usageErrorFmt("unknown subcommand '{s}'\n", .{args[1]});
 }
@@ -76,11 +90,10 @@ fn printHelp() !void {
 
 fn runExport(allocator: std.mem.Allocator, parsed: Parsed) !void {
     if (parsed.options.inline_input.json == null and parsed.options.inline_input.base64 == null and parsed.options.inline_input.file == null) {
-        try printErr("no input source provided\n", .{});
         return error.NoInputSource;
     }
 
-    const result = sweetcookie.get(allocator, parsed.options) catch |err| return runtimeError(err);
+    const result = try sweetcookie.get(allocator, parsed.options);
     defer result.deinit(allocator);
     emitWarnings(result.warnings) catch {};
     if (parsed.debug) debugCookies(result.cookies) catch {};
@@ -117,11 +130,13 @@ fn runExport(allocator: std.mem.Allocator, parsed: Parsed) !void {
 
 fn runHeader(allocator: std.mem.Allocator, parsed: Parsed) !void {
     if (parsed.options.url == null) {
-        try printErr("--url is required\n", .{});
         return error.MissingUrl;
     }
+    if (parsed.options.inline_input.json == null and parsed.options.inline_input.base64 == null and parsed.options.inline_input.file == null) {
+        return error.NoInputSource;
+    }
 
-    const result = sweetcookie.get(allocator, parsed.options) catch |err| return runtimeError(err);
+    const result = try sweetcookie.get(allocator, parsed.options);
     defer result.deinit(allocator);
     emitWarnings(result.warnings) catch {};
     if (parsed.debug) debugCookies(result.cookies) catch {};
@@ -134,9 +149,60 @@ fn runHeader(allocator: std.mem.Allocator, parsed: Parsed) !void {
     try stdout.flush();
 }
 
-fn runtimeError(err: anyerror) noreturn {
-    printErr("runtime error: {s}\n", .{@errorName(err)}) catch {};
-    std.process.exit(1);
+fn renderRuntimeError(allocator: std.mem.Allocator, err: anyerror, parsed: Parsed) !void {
+    switch (err) {
+        error.SyntaxError, error.UnexpectedEndOfInput, error.InvalidNumber, error.InvalidTopLevelTrailingWhitespace, error.InvalidCharacter, error.InvalidEscapeCharacter, error.InvalidUnicodeHexSymbol, error.InvalidUtf8Byte, error.InvalidLiteral, error.InvalidStructuralCharacter, error.InvalidStringChar, error.InvalidUseOfSurrogateHalf => {
+            if (parsed.options.inline_input.base64 != null and (err == error.InvalidCharacter or err == error.InvalidPadding)) {
+                try printErr("failed to decode base64 input: {s}\n", .{@errorName(err)});
+                return;
+            }
+            if (try jsonLocationForError(allocator, parsed)) |loc| {
+                try printErr("parse error at line {d}, column {d}: {s}\n", .{ loc.line, loc.column, @errorName(err) });
+                return;
+            }
+            try printErr("parse error: {s}\n", .{@errorName(err)});
+        },
+        error.InvalidPadding => try printErr("failed to decode base64 input: {s}\n", .{@errorName(err)}),
+        error.FileNotFound => {
+            if (parsed.options.inline_input.file) |path| {
+                try printErr("inline file not found: {s}\n", .{path});
+            } else {
+                try printErr("file not found\n", .{});
+            }
+        },
+        error.MissingUrl => try printErr("header subcommand requires --url\n", .{}),
+        error.NoInputSource => try printErr("no input source provided; pass --inline-json/--inline-file/--inline-base64 or a --browser flag\n", .{}),
+        else => try printErr("runtime error: {s}\n", .{@errorName(err)}),
+    }
+}
+
+const JsonLocation = struct {
+    line: u64,
+    column: u64,
+};
+
+fn jsonLocationForError(allocator: std.mem.Allocator, parsed: Parsed) !?JsonLocation {
+    if (parsed.options.inline_input.json) |json| return jsonLocation(allocator, json);
+    if (parsed.options.inline_input.file) |path| {
+        const file = std.fs.openFileAbsolute(path, .{ .mode = .read_only }) catch return null;
+        defer file.close();
+        const content = file.readToEndAlloc(allocator, 8 * 1024 * 1024) catch return null;
+        defer allocator.free(content);
+        return jsonLocation(allocator, content);
+    }
+    return null;
+}
+
+fn jsonLocation(allocator: std.mem.Allocator, input: []const u8) ?JsonLocation {
+    var scanner = std.json.Scanner.initCompleteInput(allocator, input);
+    defer scanner.deinit();
+    var diagnostics = std.json.Diagnostics{};
+    scanner.enableDiagnostics(&diagnostics);
+    var parsed = std.json.parseFromTokenSource(std.json.Value, allocator, &scanner, .{}) catch {
+        return .{ .line = diagnostics.getLine(), .column = diagnostics.getColumn() };
+    };
+    parsed.deinit();
+    return null;
 }
 
 fn usageError(msg: []const u8) noreturn {
