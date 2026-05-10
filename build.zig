@@ -73,6 +73,7 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_tests.step);
     addIntegrationTest(b, test_step, "tests/integration/cli_plumbing_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/cross_test.zig", target, optimize);
+    addIntegrationTest(b, test_step, "tests/integration/firefox_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/output_mode_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/fixtures/sqlite_fixture_tests.zig", target, optimize);
 

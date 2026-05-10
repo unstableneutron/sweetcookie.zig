@@ -12,6 +12,8 @@ pub const snapshot = @import("snapshot.zig");
 pub const realbrowser = @import("realbrowser.zig");
 pub const sqlite = @import("util/sqlite.zig");
 pub const firefox = struct {
+    pub const root = @import("firefox/root.zig");
+    pub const db = @import("firefox/db.zig");
     pub const profiles_ini = @import("firefox/profiles_ini.zig");
     pub const paths = @import("firefox/paths.zig");
 };
@@ -48,7 +50,10 @@ pub fn get(allocator: std.mem.Allocator, options: Options) !Result {
     }
     for (options.browsers) |browser| {
         switch (browser) {
-            .firefox => try validateFirefoxProfileSelection(allocator, options),
+            .firefox => {
+                const parsed = try firefox.root.collect(allocator, options);
+                cookies = try appendCookies(allocator, cookies, parsed);
+            },
             else => {},
         }
     }
@@ -68,23 +73,6 @@ pub fn get(allocator: std.mem.Allocator, options: Options) !Result {
         .cookies = cookies,
         .warnings = try allocator.alloc(Warning, 0),
     };
-}
-
-fn validateFirefoxProfileSelection(allocator: std.mem.Allocator, options: Options) !void {
-    if (options.firefox_cookies_file != null) return;
-    if (options.firefox_profile_root) |root_path| {
-        const selected = try firefox.profiles_ini.loadAndSelect(allocator, root_path, options.firefox_profile);
-        defer selected.ini.deinit(allocator);
-        _ = selected.profile;
-        return;
-    }
-
-    const roots = try firefox.paths.defaultProfileRoots(allocator, options.allow_real_browser);
-    defer firefox.paths.freeProfileRoots(allocator, roots);
-    if (roots.len == 0) return error.MissingProfilesIni;
-    const selected = try firefox.profiles_ini.loadAndSelect(allocator, roots[0], options.firefox_profile);
-    defer selected.ini.deinit(allocator);
-    _ = selected.profile;
 }
 
 fn appendCookies(allocator: std.mem.Allocator, existing: []Cookie, added: []Cookie) ![]Cookie {

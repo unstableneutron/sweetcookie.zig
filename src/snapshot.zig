@@ -64,6 +64,10 @@ pub fn cleanup(tmp_dir: []const u8) !void {
 const ParentDir = struct {
     dir: std.fs.Dir,
     base_name: []const u8,
+
+    fn close(self: *ParentDir) void {
+        self.dir.close();
+    }
 };
 
 fn openParentDir(path: []const u8) !ParentDir {

@@ -181,6 +181,7 @@ fn renderRuntimeError(allocator: std.mem.Allocator, err: anyerror, parsed: Parse
         error.MissingProfilesIni => try printErr("profiles.ini not found under Firefox profile root\n", .{}),
         error.FirefoxProfileNotFound => try printErr("Firefox profile not found in profiles.ini\n", .{}),
         error.RealBrowserNotPermitted => try printErr("default Firefox profile discovery requires SWEETCOOKIE_ALLOW_REAL_BROWSER=1\n", .{}),
+        error.NotADatabase => try printErr("not a database\n", .{}),
         error.MissingUrl => try printErr("header subcommand requires --url\n", .{}),
         error.NoInputSource => try printErr("no input source provided; pass --inline-json/--inline-file/--inline-base64 or a --browser flag\n", .{}),
         else => try printErr("runtime error: {s}\n", .{@errorName(err)}),
