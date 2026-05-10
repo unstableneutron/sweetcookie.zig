@@ -98,6 +98,33 @@ fn expectUnchanged(path: []const u8, before: FileState) !void {
     try std.testing.expectEqualSlices(u8, &before.hash, &after.hash);
 }
 
+fn writeSidecars(db_path: []const u8) ![3][]u8 {
+    const suffixes = [_][]const u8{ "-wal", "-shm", "-journal" };
+    var paths: [3][]u8 = undefined;
+    var written: usize = 0;
+    errdefer for (paths[0..written]) |path| std.testing.allocator.free(path);
+    for (suffixes, 0..) |suffix, i| {
+        paths[i] = try std.mem.concat(std.testing.allocator, u8, &.{ db_path, suffix });
+        written += 1;
+        try std.fs.cwd().writeFile(.{ .sub_path = paths[i], .data = "" });
+    }
+    return paths;
+}
+
+fn freeSidecarPaths(paths: [3][]u8) void {
+    for (paths) |path| std.testing.allocator.free(path);
+}
+
+fn sidecarStates(paths: [3][]u8) ![3]FileState {
+    var states: [3]FileState = undefined;
+    for (paths, 0..) |path, i| states[i] = try fileState(path);
+    return states;
+}
+
+fn expectSidecarsUnchanged(paths: [3][]u8, before: [3]FileState) !void {
+    for (paths, before) |path, state| try expectUnchanged(path, state);
+}
+
 fn buildFirefoxDb(db_path: []const u8, entries: []const FirefoxCookie) !void {
     var sql = std.ArrayList(u8).empty;
     defer sql.deinit(std.testing.allocator);
@@ -415,9 +442,15 @@ test "VAL-CROSS-003 all backends in one invocation leave source files unchanged"
     const chrome_db = try std.fs.path.join(std.testing.allocator, &.{ chrome_root, "Default", "Cookies" });
     defer std.testing.allocator.free(chrome_db);
     try buildChromiumDb(chrome_db, &.{.{ .name = "ch", .value = "chromium", .host = "example.com", .path = "/" }});
+    const firefox_sidecars = try writeSidecars(firefox.db);
+    defer freeSidecarPaths(firefox_sidecars);
+    const chromium_sidecars = try writeSidecars(chrome_db);
+    defer freeSidecarPaths(chromium_sidecars);
     const before_ff = try fileState(firefox.db);
+    const before_ff_sidecars = try sidecarStates(firefox_sidecars);
     const before_sf = try fileState(safari_file);
     const before_ch = try fileState(chrome_db);
+    const before_ch_sidecars = try sidecarStates(chromium_sidecars);
     const tmp_root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(tmp_root);
 
@@ -429,8 +462,10 @@ test "VAL-CROSS-003 all backends in one invocation leave source files unchanged"
     defer parsed.deinit();
     try std.testing.expectEqual(@as(usize, 3), parsed.value.array.items.len);
     try expectUnchanged(firefox.db, before_ff);
+    try expectSidecarsUnchanged(firefox_sidecars, before_ff_sidecars);
     try expectUnchanged(safari_file, before_sf);
     try expectUnchanged(chrome_db, before_ch);
+    try expectSidecarsUnchanged(chromium_sidecars, before_ch_sidecars);
 }
 
 test "VAL-CROSS-006 raw values do not leak in debug for each backend" {
@@ -470,9 +505,15 @@ test "VAL-CROSS-010 concurrent multi-backend runs do not corrupt source" {
     const chrome_db = try tmpPath(&tmp, "Cookies");
     defer std.testing.allocator.free(chrome_db);
     try buildChromiumDb(chrome_db, &.{.{ .name = "ch", .value = "chromium", .host = "example.com", .path = "/" }});
+    const firefox_sidecars = try writeSidecars(firefox.db);
+    defer freeSidecarPaths(firefox_sidecars);
+    const chromium_sidecars = try writeSidecars(chrome_db);
+    defer freeSidecarPaths(chromium_sidecars);
     const before_ff = try fileState(firefox.db);
+    const before_ff_sidecars = try sidecarStates(firefox_sidecars);
     const before_sf = try fileState(safari_file);
     const before_ch = try fileState(chrome_db);
+    const before_ch_sidecars = try sidecarStates(chromium_sidecars);
     const argv = &.{ "zig-out/bin/sweetcookie", "export", "--browser", "firefox", "--firefox-profile-root", firefox.root, "--browser", "safari", "--safari-cookies-file", safari_file, "--browser", "chrome", "--chrome-cookies-db", chrome_db, "--all-domains", "--include-expired" };
     var one = std.process.Child.init(argv, std.testing.allocator);
     var two = std.process.Child.init(argv, std.testing.allocator);
@@ -495,6 +536,8 @@ test "VAL-CROSS-010 concurrent multi-backend runs do not corrupt source" {
     try std.testing.expect(std.mem.indexOf(u8, one_out, "ff") != null);
     try std.testing.expect(std.mem.indexOf(u8, two_out, "ff") != null);
     try expectUnchanged(firefox.db, before_ff);
+    try expectSidecarsUnchanged(firefox_sidecars, before_ff_sidecars);
     try expectUnchanged(safari_file, before_sf);
     try expectUnchanged(chrome_db, before_ch);
+    try expectSidecarsUnchanged(chromium_sidecars, before_ch_sidecars);
 }

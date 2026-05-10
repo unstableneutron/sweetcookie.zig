@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
@@ -34,7 +33,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     lib_mod.addIncludePath(sqlite_dep.path(""));
-    linkPlatformLibraries(lib_mod, target);
+    linkPlatformLibraries(b, lib_mod, target, optimize);
 
     const lib = b.addLibrary(.{
         .linkage = .static,
@@ -51,7 +50,7 @@ pub fn build(b: *std.Build) void {
     });
     exe_mod.addImport("sweetcookie", lib_mod);
     exe_mod.addImport("cli", cli_dep.module("cli"));
-    linkPlatformLibraries(exe_mod, target);
+    linkPlatformLibraries(b, exe_mod, target, optimize);
 
     const exe = b.addExecutable(.{
         .name = "sweetcookie",
@@ -88,7 +87,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
     api_smoke_mod.addImport("sweetcookie", lib_mod);
-    linkPlatformLibraries(api_smoke_mod, target);
+    linkPlatformLibraries(b, api_smoke_mod, target, optimize);
 
     const api_smoke = b.addExecutable(.{
         .name = "api-smoke",
@@ -122,19 +121,33 @@ fn addIntegrationTest(
     test_step.dependOn(&run_integration_tests.step);
 }
 
-fn linkPlatformLibraries(module: *std.Build.Module, target: std.Build.ResolvedTarget) void {
+fn linkPlatformLibraries(
+    b: *std.Build,
+    module: *std.Build.Module,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) void {
     switch (target.result.os.tag) {
         .macos => {
             module.linkFramework("Security", .{});
             module.linkFramework("CoreFoundation", .{});
         },
         .linux => {
-            if (builtin.os.tag == .linux) {
-                module.linkSystemLibrary("secret-1", .{
-                    .needed = false,
-                    .use_pkg_config = .no,
-                });
-            }
+            const libsecret_stub_mod = b.createModule(.{
+                .root_source_file = b.path("src/chromium/libsecret_stub.zig"),
+                .target = target,
+                .optimize = optimize,
+            });
+            const libsecret_stub = b.addLibrary(.{
+                .linkage = .dynamic,
+                .name = "secret-1",
+                .root_module = libsecret_stub_mod,
+            });
+            module.addLibraryPath(libsecret_stub.getEmittedBinDirectory());
+            module.linkSystemLibrary("secret-1", .{
+                .needed = false,
+                .use_pkg_config = .no,
+            });
         },
         .windows => {
             module.linkSystemLibrary("crypt32", .{ .needed = false });

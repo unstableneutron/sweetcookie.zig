@@ -1,6 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const windows = std.os.windows;
+const Browser = @import("../Cookie.zig").Browser;
+const paths = @import("paths.zig");
 
 pub const SecretError = error{
     UnsupportedPlatform,
@@ -11,9 +13,13 @@ pub const SecretError = error{
 
 pub fn getStorageKey(allocator: std.mem.Allocator, browser_name: []const u8) ![]u8 {
     if (try keyFromTestEnv(allocator)) |key| return key;
-    _ = browser_name;
     if (builtin.os.tag != .windows) return error.UnsupportedPlatform;
-    return error.NativeSecretFailed;
+    const protected = protectedKeyFromBrowserLocalState(allocator, browser_name) catch return error.NativeSecretFailed;
+    defer allocator.free(protected);
+    const key = dpapiUnprotect(allocator, protected) catch return error.NativeSecretFailed;
+    errdefer allocator.free(key);
+    if (key.len != 32) return error.NativeSecretFailed;
+    return key;
 }
 
 const DATA_BLOB = extern struct {
@@ -188,10 +194,57 @@ fn keyFromTestEnv(allocator: std.mem.Allocator) !?[]u8 {
     return out;
 }
 
+fn protectedKeyFromBrowserLocalState(allocator: std.mem.Allocator, browser_name: []const u8) ![]u8 {
+    const browser = browserFromName(browser_name) orelse return error.NativeSecretFailed;
+    const root = try paths.defaultProfileRoot(allocator, browser);
+    defer allocator.free(root);
+    const local_state = try std.fs.path.join(allocator, &.{ root, "Local State" });
+    defer allocator.free(local_state);
+    const bytes = try std.fs.cwd().readFileAlloc(allocator, local_state, 4 * 1024 * 1024);
+    defer allocator.free(bytes);
+    return encryptedKeyFromLocalState(allocator, bytes);
+}
+
+fn browserFromName(name: []const u8) ?Browser {
+    inline for (@typeInfo(Browser).@"enum".fields) |field| {
+        if (std.ascii.eqlIgnoreCase(name, field.name)) return @enumFromInt(field.value);
+    }
+    return null;
+}
+
+fn encryptedKeyFromLocalState(allocator: std.mem.Allocator, bytes: []const u8) ![]u8 {
+    var parsed = try std.json.parseFromSlice(std.json.Value, allocator, bytes, .{});
+    defer parsed.deinit();
+    if (parsed.value != .object) return error.NativeSecretFailed;
+    const os_crypt = parsed.value.object.get("os_crypt") orelse return error.NativeSecretFailed;
+    if (os_crypt != .object) return error.NativeSecretFailed;
+    const encrypted_value = os_crypt.object.get("encrypted_key") orelse return error.NativeSecretFailed;
+    if (encrypted_value != .string) return error.NativeSecretFailed;
+    const encoded = encrypted_value.string;
+    const decoded_len = try std.base64.standard.Decoder.calcSizeForSlice(encoded);
+    const decoded = try allocator.alloc(u8, decoded_len);
+    errdefer allocator.free(decoded);
+    try std.base64.standard.Decoder.decode(decoded, encoded);
+    if (!std.mem.startsWith(u8, decoded, "DPAPI")) return error.NativeSecretFailed;
+    const out = try allocator.dupe(u8, decoded[5..]);
+    allocator.free(decoded);
+    return out;
+}
+
 test "windows native secret symbols are addressable" {
     if (builtin.os.tag != .windows) return error.SkipZigTest;
 
     try std.testing.expect(@intFromPtr(&CryptUnprotectData) != 0);
     try std.testing.expect(@intFromPtr(&BCryptOpenAlgorithmProvider) != 0);
     try std.testing.expect(@intFromPtr(&BCryptDecrypt) != 0);
+}
+
+test "windows Local State encrypted_key parser extracts DPAPI payload" {
+    if (builtin.os.tag != .windows) return error.SkipZigTest;
+
+    const payload = try encryptedKeyFromLocalState(std.testing.allocator,
+        \\{"os_crypt":{"encrypted_key":"RFBBUEkBAgME"}}
+    );
+    defer std.testing.allocator.free(payload);
+    try std.testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4 }, payload);
 }

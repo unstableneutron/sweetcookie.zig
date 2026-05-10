@@ -142,7 +142,10 @@ fn decryptPayload(allocator: std.mem.Allocator, key: []const u8, payload: []cons
 
 fn decryptCbc(allocator: std.mem.Allocator, key: []const u8, payload: []const u8) ![]u8 {
     if (key.len < 16) return error.InvalidKeyLength;
-    return crypto.aes128_cbc_decrypt(allocator, key[0..16], &([_]u8{' '} ** 16), payload);
+    if (key.len == 16 or key.len == 32) return crypto.aes128_cbc_decrypt(allocator, key[0..16], &([_]u8{' '} ** 16), payload);
+    const derived = try crypto.pbkdf2_hmac_sha1(allocator, key, "saltysalt", 1003, 16);
+    defer allocator.free(derived);
+    return crypto.aes128_cbc_decrypt(allocator, derived, &([_]u8{' '} ** 16), payload);
 }
 
 fn decryptGcm(allocator: std.mem.Allocator, key: []const u8, payload: []const u8) ![]u8 {
@@ -174,4 +177,45 @@ test "chromium sameSite values map to canonical enum" {
     try std.testing.expectEqual(SameSite.None, chromiumSameSite(0).?);
     try std.testing.expectEqual(SameSite.Lax, chromiumSameSite(1).?);
     try std.testing.expectEqual(SameSite.Strict, chromiumSameSite(2).?);
+}
+
+test "decryptChromiumValue derives CBC key from Safe Storage secret" {
+    const secret = "fixture safe storage password";
+    const derived = try crypto.pbkdf2_hmac_sha1(std.testing.allocator, secret, "saltysalt", 1003, 16);
+    defer std.testing.allocator.free(derived);
+
+    const payload = try encryptCbcForTest(std.testing.allocator, derived, "pbkdf2 decrypted value");
+    defer std.testing.allocator.free(payload);
+    const encrypted = try std.mem.concat(std.testing.allocator, u8, &.{ "v10", payload });
+    defer std.testing.allocator.free(encrypted);
+
+    const decrypted = try decryptChromiumValue(std.testing.allocator, encrypted, secret, "example.com", 23);
+    defer std.testing.allocator.free(decrypted);
+    try std.testing.expectEqualStrings("pbkdf2 decrypted value", decrypted);
+}
+
+fn encryptCbcForTest(allocator: std.mem.Allocator, key: []const u8, plaintext: []const u8) ![]u8 {
+    const block_size = 16;
+    const pad_len = block_size - (plaintext.len % block_size);
+    const total = plaintext.len + pad_len;
+    const padded = try allocator.alloc(u8, total);
+    defer allocator.free(padded);
+    @memcpy(padded[0..plaintext.len], plaintext);
+    @memset(padded[plaintext.len..], @intCast(pad_len));
+
+    const out = try allocator.alloc(u8, total);
+    errdefer allocator.free(out);
+    var key_block: [16]u8 = undefined;
+    @memcpy(&key_block, key[0..16]);
+    var previous = [_]u8{' '} ** 16;
+    const aes = std.crypto.core.aes.Aes128.initEnc(key_block);
+    var offset: usize = 0;
+    while (offset < padded.len) : (offset += block_size) {
+        var block: [16]u8 = undefined;
+        @memcpy(&block, padded[offset..][0..block_size]);
+        for (&block, previous) |*byte, prev| byte.* ^= prev;
+        aes.encrypt(out[offset..][0..block_size], &block);
+        @memcpy(&previous, out[offset..][0..block_size]);
+    }
+    return out;
 }
