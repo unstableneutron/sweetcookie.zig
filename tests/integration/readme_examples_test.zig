@@ -39,6 +39,9 @@ test "README has required usage documentation sections" {
     defer allocator.free(readme);
 
     try expectContains(readme, "## Project overview");
+    try expectContains(readme, "Zig-native port of Peter Steinberger");
+    try expectContains(readme, "steipete/sweetcookie");
+    try expectContains(readme, "steipete/sweet-cookie");
     try expectContains(readme, "## Installation");
     try expectContains(readme, "## Library usage");
     try expectContains(readme, "## CLI usage");

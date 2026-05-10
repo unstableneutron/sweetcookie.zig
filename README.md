@@ -1,5 +1,7 @@
 # sweetcookie.zig
 
+> This project is a Zig-native port of Peter Steinberger's [steipete/sweetcookie](https://github.com/steipete/sweetcookie) and [steipete/sweet-cookie](https://github.com/steipete/sweet-cookie). The vast majority of the design and feature set is his — this is a Zig translation that adds native OS integration and stricter live-profile-safety guarantees.
+
 ## Project overview
 
 `sweetcookie.zig` is a Zig-native cookie extraction library and CLI. It reads
