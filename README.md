@@ -130,6 +130,76 @@ SQL
   --format lightpanda-json >/dev/null
 ```
 
+## Output formats
+
+### Netscape cookies.txt
+
+```sh
+PROFILE="$(mktemp -d "$(pwd)/tests/fixtures/readme-netscape.XXXXXX")"
+trap 'rm -rf "$PROFILE"' EXIT
+cat >"$PROFILE/cookies.json" <<'JSON'
+[
+  {"name":"sid","value":"one","domain":"127.0.0.1","path":"/","expires":4102444800}
+]
+JSON
+./zig-out/bin/sweetcookie export \
+  --inline-file "$PROFILE/cookies.json" \
+  --format netscape \
+  --output "$PROFILE/cookies.txt"
+grep -q 'sid	one' "$PROFILE/cookies.txt"
+```
+
+### Playwright storage state
+
+```sh
+PROFILE="$(mktemp -d "$(pwd)/tests/fixtures/readme-playwright.XXXXXX")"
+trap 'rm -rf "$PROFILE"' EXIT
+cat >"$PROFILE/cookies.json" <<'JSON'
+[
+  {"name":"sid","value":"one","domain":"127.0.0.1","path":"/","expires":4102444800,"sameSite":"Lax"}
+]
+JSON
+./zig-out/bin/sweetcookie export \
+  --inline-file "$PROFILE/cookies.json" \
+  --format playwright \
+  --output "$PROFILE/state.json"
+node -e "const s=require('fs').readFileSync(process.argv[1],'utf8'); const j=JSON.parse(s); if (!j.cookies?.some(c => c.name === 'sid')) process.exit(1)" "$PROFILE/state.json"
+```
+
+### Puppeteer cookies array
+
+```sh
+PROFILE="$(mktemp -d "$(pwd)/tests/fixtures/readme-puppeteer.XXXXXX")"
+trap 'rm -rf "$PROFILE"' EXIT
+cat >"$PROFILE/cookies.json" <<'JSON'
+[
+  {"name":"sid","value":"one","domain":"127.0.0.1","path":"/","expires":4102444800,"sameSite":"Lax"}
+]
+JSON
+./zig-out/bin/sweetcookie export \
+  --inline-file "$PROFILE/cookies.json" \
+  --format puppeteer \
+  --output "$PROFILE/cookies-puppeteer.json"
+node -e "const s=require('fs').readFileSync(process.argv[1],'utf8'); const j=JSON.parse(s); if (!Array.isArray(j) || !j.some(c => c.name === 'sid')) process.exit(1)" "$PROFILE/cookies-puppeteer.json"
+```
+
+### HTTPie session
+
+```sh
+PROFILE="$(mktemp -d "$(pwd)/tests/fixtures/readme-httpie.XXXXXX")"
+trap 'rm -rf "$PROFILE"' EXIT
+cat >"$PROFILE/cookies.json" <<'JSON'
+[
+  {"name":"sid","value":"one","domain":"127.0.0.1","path":"/","expires":4102444800}
+]
+JSON
+./zig-out/bin/sweetcookie export \
+  --inline-file "$PROFILE/cookies.json" \
+  --format httpie \
+  --output "$PROFILE/httpie-session.json"
+jq -e '.cookies.sid.value == "one"' "$PROFILE/httpie-session.json" >/dev/null
+```
+
 ## Cookie model semantics
 
 The canonical cookie model keeps both normalized and source-domain information:

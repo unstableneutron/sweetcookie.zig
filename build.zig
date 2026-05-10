@@ -75,6 +75,7 @@ pub fn build(b: *std.Build) void {
     addIntegrationTest(b, test_step, "tests/integration/firefox_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/output_mode_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/extra_formats_test.zig", target, optimize);
+    addIntegrationTest(b, test_step, "tests/integration/extra_formats_e2e_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/safari_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/chromium_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/real_browser_test.zig", target, optimize);
@@ -116,6 +117,12 @@ fn addIntegrationTest(
         .target = target,
         .optimize = optimize,
     });
+    const echo_server_mod = b.createModule(.{
+        .root_source_file = b.path("tests/fixtures/echo_server.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    integration_tests_mod.addImport("echo_server", echo_server_mod);
     const integration_tests = b.addTest(.{ .root_module = integration_tests_mod });
     const run_integration_tests = b.addRunArtifact(integration_tests);
     run_integration_tests.step.dependOn(b.getInstallStep());

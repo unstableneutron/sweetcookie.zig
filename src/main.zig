@@ -87,7 +87,13 @@ fn printHelp() !void {
         \\  -h, --help  Show this help output.
         \\
         \\EXPORT FORMATS:
-        \\  lightpanda-json, sweet-cookie-json, cookie-header, netscape, playwright, puppeteer, httpie
+        \\  lightpanda-json     Lightpanda-compatible JSON cookie array.
+        \\  sweet-cookie-json   Lossless sweetcookie JSON envelope.
+        \\  cookie-header       RFC 6265 Cookie header string.
+        \\  netscape            Netscape cookies.txt jar for curl and wget.
+        \\  playwright          Playwright storageState JSON object.
+        \\  puppeteer           Puppeteer cookies JSON array.
+        \\  httpie              HTTPie session JSON with cookies only.
         \\
     );
     try stdout.flush();
