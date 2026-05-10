@@ -23,6 +23,9 @@ pub const safari = struct {
     pub const paths = @import("safari/paths.zig");
     pub const binarycookies = @import("safari/binarycookies.zig");
 };
+pub const chromium = struct {
+    pub const crypto = @import("chromium/crypto.zig");
+};
 
 pub const Browser = CookieMod.Browser;
 pub const SameSite = CookieMod.SameSite;
@@ -146,6 +149,10 @@ test "firefox module declarations are test reachable" {
 
 test "safari module declarations are test reachable" {
     std.testing.refAllDecls(safari);
+}
+
+test "chromium module declarations are test reachable" {
+    std.testing.refAllDecls(chromium);
 }
 
 test "time module declarations are test reachable" {
