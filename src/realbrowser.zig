@@ -75,6 +75,8 @@ test "gateOrBackup writes backup tarball and reports path when allowed" {
 
     try std.testing.expect(std.mem.indexOf(u8, backup, "sweetcookie-backup-") != null);
     try std.testing.expect(std.mem.endsWith(u8, backup, "-firefox.tar"));
-    const stat = try std.fs.statFileAbsolute(backup);
+    const backup_file = try std.fs.openFileAbsolute(backup, .{ .mode = .read_only });
+    defer backup_file.close();
+    const stat = try backup_file.stat();
     try std.testing.expect(stat.size > 0);
 }

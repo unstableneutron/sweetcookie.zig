@@ -126,7 +126,9 @@ test "writeDirectoryTar writes a nonempty tarball for a directory tree" {
 
     try writeDirectoryTar(std.testing.allocator, profile, out);
 
-    const stat = try std.fs.statFileAbsolute(out);
+    const out_file = try std.fs.openFileAbsolute(out, .{ .mode = .read_only });
+    defer out_file.close();
+    const stat = try out_file.stat();
     try std.testing.expect(stat.size > 1024);
     try std.testing.expectEqual(@as(u64, 0), stat.size % 512);
 }
