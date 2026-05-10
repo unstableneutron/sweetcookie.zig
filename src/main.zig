@@ -87,7 +87,7 @@ fn printHelp() !void {
         \\  -h, --help  Show this help output.
         \\
         \\EXPORT FORMATS:
-        \\  lightpanda-json, sweet-cookie-json, cookie-header, netscape, playwright
+        \\  lightpanda-json, sweet-cookie-json, cookie-header, netscape, playwright, puppeteer
         \\
     );
     try stdout.flush();
@@ -116,6 +116,8 @@ fn runExport(allocator: std.mem.Allocator, parsed: Parsed) !void {
         try sweetcookie.exporter.writeNetscapeJar(writer, result.cookies);
     } else if (std.mem.eql(u8, parsed.format, "playwright")) {
         try sweetcookie.exporter.writePlaywrightStorageState(writer, result.cookies);
+    } else if (std.mem.eql(u8, parsed.format, "puppeteer")) {
+        try sweetcookie.exporter.writePuppeteerCookies(writer, result.cookies);
     } else if (std.mem.eql(u8, parsed.format, "sweet-cookie-json")) {
         try sweetcookie.exporter.writeSweetCookieJson(writer, result.cookies, .{ .generated_at_unix = std.time.timestamp(), .target_url = parsed.options.url });
     } else if (std.mem.eql(u8, parsed.format, "cookie-header")) {

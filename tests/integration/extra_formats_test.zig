@@ -407,3 +407,134 @@ test "VAL-PLAYWRIGHT-015 and VAL-PLAYWRIGHT-016 source unchanged and filters flo
     try std.testing.expectEqualStrings("sid", cookies[0].object.get("name").?.string);
     try std.testing.expectEqualStrings(".example.com", cookies[0].object.get("domain").?.string);
 }
+
+test "VAL-PUPPETEER-001 through VAL-PUPPETEER-011 and VAL-PUPPETEER-015 array shape mode and determinism" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{
+        .sub_path = "in.json",
+        .data =
+        \\[
+        \\  {"name":"b","value":"bee","domain":"z.example","path":"/","secure":true,"httpOnly":false,"sameSite":"None"},
+        \\  {"name":"a","value":"strict","domain":".Example.com","path":"/b","expires":1750000000,"secure":false,"httpOnly":true,"sameSite":"Strict"},
+        \\  {"name":"a","value":"lax","domain":".example.com","path":"/a","secure":true,"httpOnly":true,"sameSite":"Lax"},
+        \\  {"name":"c","value":"session","domain":"example.com","path":"/","secure":false,"httpOnly":false,"sameSite":"Lax"}
+        \\]
+        ,
+    });
+    const in_path = try tmp.dir.realpathAlloc(std.testing.allocator, "in.json");
+    defer std.testing.allocator.free(in_path);
+    const out1_path = try tmpPath(&tmp, &.{"cookies1.json"});
+    defer std.testing.allocator.free(out1_path);
+    const out2_path = try tmpPath(&tmp, &.{"cookies2.json"});
+    defer std.testing.allocator.free(out2_path);
+
+    const first = try run(std.testing.allocator, &.{ exe, "export", "--inline-file", in_path, "--include-expired", "--format", "puppeteer", "--output", out1_path });
+    defer std.testing.allocator.free(first.stdout);
+    defer std.testing.allocator.free(first.stderr);
+    try expectExit0(first);
+    try assertMode0600(out1_path);
+
+    const second = try run(std.testing.allocator, &.{ exe, "export", "--inline-file", in_path, "--include-expired", "--format", "puppeteer", "--output", out2_path });
+    defer std.testing.allocator.free(second.stdout);
+    defer std.testing.allocator.free(second.stderr);
+    try expectExit0(second);
+    try assertMode0600(out2_path);
+
+    const bytes1 = try readFile(out1_path);
+    defer std.testing.allocator.free(bytes1);
+    const bytes2 = try readFile(out2_path);
+    defer std.testing.allocator.free(bytes2);
+    try std.testing.expectEqualSlices(u8, bytes1, bytes2);
+    try std.testing.expect(bytes1.len > 0 and bytes1[bytes1.len - 1] != '\n');
+
+    const jq = try run(std.testing.allocator, &.{ "jq", "type == \"array\"", out1_path });
+    defer std.testing.allocator.free(jq.stdout);
+    defer std.testing.allocator.free(jq.stderr);
+    try expectExit0(jq);
+    try std.testing.expect(std.mem.containsAtLeast(u8, jq.stdout, 1, "true"));
+
+    var parsed = try parseJson(bytes1);
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .array);
+    const cookies = parsed.value.array.items;
+    try std.testing.expectEqual(@as(usize, 4), cookies.len);
+    try std.testing.expectEqualStrings("a", cookies[0].object.get("name").?.string);
+    try std.testing.expectEqualStrings(".example.com", cookies[0].object.get("domain").?.string);
+    try std.testing.expectEqualStrings("/a", cookies[0].object.get("path").?.string);
+    try std.testing.expect(!cookies[0].object.contains("expires"));
+    try std.testing.expect(cookies[0].object.get("secure").?.bool);
+    try std.testing.expect(cookies[0].object.get("httpOnly").?.bool);
+    try std.testing.expectEqualStrings("Lax", cookies[0].object.get("sameSite").?.string);
+    try std.testing.expectEqual(@as(i64, 1750000000), cookies[1].object.get("expires").?.integer);
+    try std.testing.expectEqualStrings("Strict", cookies[1].object.get("sameSite").?.string);
+    try std.testing.expectEqualStrings("None", cookies[2].object.get("sameSite").?.string);
+    try std.testing.expect(!cookies[2].object.contains("expires"));
+    try std.testing.expect(!cookies[3].object.contains("expires"));
+}
+
+test "VAL-PUPPETEER-011 empty input yields exact array" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const out_path = try tmpPath(&tmp, &.{"empty-cookies.json"});
+    defer std.testing.allocator.free(out_path);
+
+    const res = try run(std.testing.allocator, &.{ exe, "export", "--inline-json", "[]", "--format", "puppeteer", "--output", out_path });
+    defer std.testing.allocator.free(res.stdout);
+    defer std.testing.allocator.free(res.stderr);
+    try expectExit0(res);
+    const bytes = try readFile(out_path);
+    defer std.testing.allocator.free(bytes);
+    try std.testing.expectEqualStrings("[]", bytes);
+}
+
+test "VAL-PUPPETEER-013 and VAL-PUPPETEER-014 source unchanged and filters flow through" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{
+        .sub_path = "profiles.ini",
+        .data =
+        \\[Profile0]
+        \\Name=default
+        \\IsRelative=1
+        \\Path=default
+        \\Default=1
+        \\
+        ,
+    });
+    try tmp.dir.makePath("default");
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const db_path = try std.fs.path.join(std.testing.allocator, &.{ root, "default", "cookies.sqlite" });
+    defer std.testing.allocator.free(db_path);
+    try buildFirefoxDb(db_path, &.{
+        .{ .name = "sid", .value = "keep", .host = ".example.com", .path = "/", .expiry = 4102444800, .secure = true, .httponly = true },
+        .{ .name = "other", .value = "drop", .host = "other.com", .path = "/", .expiry = 4102444800 },
+    });
+    const before = try fileState(db_path);
+    const out_path = try tmpPath(&tmp, &.{"firefox-puppeteer.json"});
+    defer std.testing.allocator.free(out_path);
+
+    const res = try runWithTmp(std.testing.allocator, &.{ exe, "export", "--browser", "firefox", "--firefox-profile-root", root, "--url", "https://example.com/", "--name", "sid", "--format", "puppeteer", "--output", out_path }, root);
+    defer std.testing.allocator.free(res.stdout);
+    defer std.testing.allocator.free(res.stderr);
+    try expectExit0(res);
+    try expectUnchanged(db_path, before);
+    try assertMode0600(out_path);
+    const bytes = try readFile(out_path);
+    defer std.testing.allocator.free(bytes);
+    var parsed = try parseJson(bytes);
+    defer parsed.deinit();
+    const cookies = parsed.value.array.items;
+    try std.testing.expectEqual(@as(usize, 1), cookies.len);
+    try std.testing.expectEqualStrings("sid", cookies[0].object.get("name").?.string);
+    try std.testing.expectEqualStrings(".example.com", cookies[0].object.get("domain").?.string);
+}
+
+test "export help lists puppeteer format" {
+    const res = try run(std.testing.allocator, &.{ exe, "export", "--help" });
+    defer std.testing.allocator.free(res.stdout);
+    defer std.testing.allocator.free(res.stderr);
+    try expectExit0(res);
+    try std.testing.expect(std.mem.containsAtLeast(u8, res.stdout, 1, "puppeteer"));
+}

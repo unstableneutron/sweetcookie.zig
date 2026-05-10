@@ -117,6 +117,40 @@ pub fn writePlaywrightStorageState(writer: anytype, cookies: []const Cookie) !vo
     try writer.writeAll("],\"origins\":[]}");
 }
 
+pub fn writePuppeteerCookies(writer: anytype, cookies: []const Cookie) !void {
+    const sorted = try sortedIndexes(std.heap.page_allocator, cookies);
+    defer std.heap.page_allocator.free(sorted);
+
+    try writer.writeByte('[');
+    for (sorted, 0..) |idx, i| {
+        if (i > 0) try writer.writeByte(',');
+        const cookie = cookies[idx];
+        try writer.writeByte('{');
+        try writeField(writer, "name", cookie.name);
+        try writer.writeByte(',');
+        try writeField(writer, "value", cookie.value);
+        try writer.writeByte(',');
+        try writeField(writer, "domain", cookie.raw_domain);
+        try writer.writeByte(',');
+        try writeField(writer, "path", cookie.path);
+        try writer.writeByte(',');
+        try writer.writeAll("\"secure\":");
+        try writer.writeAll(if (cookie.secure) "true" else "false");
+        try writer.writeByte(',');
+        try writer.writeAll("\"httpOnly\":");
+        try writer.writeAll(if (cookie.http_only) "true" else "false");
+        try writer.writeByte(',');
+        try writeField(writer, "sameSite", sameSiteText(cookie.same_site orelse .Lax));
+        if (cookie.expires) |expires| {
+            try writer.writeByte(',');
+            try writer.writeAll("\"expires\":");
+            try writer.print("{d}", .{expires});
+        }
+        try writer.writeByte('}');
+    }
+    try writer.writeByte(']');
+}
+
 pub fn firstNetscapeUnencodable(cookies: []const Cookie) ?NetscapeUnencodable {
     for (cookies) |cookie| {
         if (firstControlByte(cookie.name)) |byte| return .{ .name = cookie.name, .field = "name", .byte = byte };
@@ -503,6 +537,67 @@ test "VAL-PLAYWRIGHT-001 escapes JSON control bytes" {
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.items, .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("a\x01b", parsed.value.object.get("cookies").?.array.items[0].object.get("value").?.string);
+}
+
+test "VAL-PUPPETEER-001 through VAL-PUPPETEER-007 and VAL-PUPPETEER-015 writes compact cookies array" {
+    var cookies = try std.testing.allocator.alloc(Cookie, 4);
+    defer freeCookies(std.testing.allocator, cookies);
+    cookies[0] = try Cookie.fromRawDomain(std.testing.allocator, "z.example", "b", "plain", "/", null, true, false, .None, .{});
+    cookies[1] = try Cookie.fromRawDomain(std.testing.allocator, ".Example.com", "a", "strict", "/b", 1750000000, false, true, .Strict, .{});
+    cookies[2] = try Cookie.fromRawDomain(std.testing.allocator, ".example.com", "a", "lax", "/a", null, true, true, .Lax, .{});
+    cookies[3] = try Cookie.fromRawDomain(std.testing.allocator, "example.com", "c", "session", "/", null, false, false, .Lax, .{});
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+    try writePuppeteerCookies(out.writer(std.testing.allocator), cookies);
+
+    try std.testing.expectEqualStrings(
+        "[{\"name\":\"a\",\"value\":\"lax\",\"domain\":\".example.com\",\"path\":\"/a\",\"secure\":true,\"httpOnly\":true,\"sameSite\":\"Lax\"},{\"name\":\"a\",\"value\":\"strict\",\"domain\":\".Example.com\",\"path\":\"/b\",\"secure\":false,\"httpOnly\":true,\"sameSite\":\"Strict\",\"expires\":1750000000},{\"name\":\"b\",\"value\":\"plain\",\"domain\":\"z.example\",\"path\":\"/\",\"secure\":true,\"httpOnly\":false,\"sameSite\":\"None\"},{\"name\":\"c\",\"value\":\"session\",\"domain\":\"example.com\",\"path\":\"/\",\"secure\":false,\"httpOnly\":false,\"sameSite\":\"Lax\"}]",
+        out.items,
+    );
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.items, .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .array);
+    const parsed_cookies = parsed.value.array.items;
+    try std.testing.expectEqual(@as(usize, 4), parsed_cookies.len);
+    try std.testing.expectEqualStrings("a", parsed_cookies[0].object.get("name").?.string);
+    try std.testing.expectEqualStrings(".example.com", parsed_cookies[0].object.get("domain").?.string);
+    try std.testing.expectEqualStrings("/a", parsed_cookies[0].object.get("path").?.string);
+    try std.testing.expect(!parsed_cookies[0].object.contains("expires"));
+    try std.testing.expect(parsed_cookies[0].object.get("secure").?.bool);
+    try std.testing.expect(parsed_cookies[0].object.get("httpOnly").?.bool);
+    try std.testing.expectEqualStrings("Lax", parsed_cookies[0].object.get("sameSite").?.string);
+    try std.testing.expectEqual(@as(i64, 1750000000), parsed_cookies[1].object.get("expires").?.integer);
+    try std.testing.expectEqualStrings("Strict", parsed_cookies[1].object.get("sameSite").?.string);
+    try std.testing.expectEqualStrings("None", parsed_cookies[2].object.get("sameSite").?.string);
+    try std.testing.expect(!parsed_cookies[2].object.contains("expires"));
+    try std.testing.expect(!parsed_cookies[3].object.contains("expires"));
+}
+
+test "VAL-PUPPETEER-009 through VAL-PUPPETEER-011 empty output is stable literal array" {
+    var out1 = std.ArrayList(u8).empty;
+    var out2 = std.ArrayList(u8).empty;
+    defer out1.deinit(std.testing.allocator);
+    defer out2.deinit(std.testing.allocator);
+    try writePuppeteerCookies(out1.writer(std.testing.allocator), &.{});
+    try writePuppeteerCookies(out2.writer(std.testing.allocator), &.{});
+    try std.testing.expectEqualStrings("[]", out1.items);
+    try std.testing.expectEqualStrings(out1.items, out2.items);
+}
+
+test "VAL-PUPPETEER-001 escapes JSON control bytes" {
+    var cookies = try std.testing.allocator.alloc(Cookie, 1);
+    defer freeCookies(std.testing.allocator, cookies);
+    cookies[0] = try Cookie.fromRawDomain(std.testing.allocator, "example.com", "ctl", "a\x01b", "/", null, false, false, .Lax, .{});
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+    try writePuppeteerCookies(out.writer(std.testing.allocator), cookies);
+    try std.testing.expect(std.mem.containsAtLeast(u8, out.items, 1, "a\\u0001b"));
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.items, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("a\x01b", parsed.value.array.items[0].object.get("value").?.string);
 }
 
 fn testCookies(allocator: std.mem.Allocator) ![]Cookie {
