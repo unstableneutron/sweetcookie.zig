@@ -10,6 +10,7 @@ pub const exporter = @import("exporter.zig");
 pub const output = @import("output.zig");
 pub const snapshot = @import("snapshot.zig");
 pub const realbrowser = @import("realbrowser.zig");
+pub const sqlite = @import("util/sqlite.zig");
 
 pub const Browser = CookieMod.Browser;
 pub const SameSite = CookieMod.SameSite;
@@ -108,4 +109,8 @@ test "exporter writes lightpanda json array" {
     defer out.deinit(std.testing.allocator);
     try exporter.writeLightpandaJson(out.writer(std.testing.allocator), cookies);
     try std.testing.expect(out.items.len > 0);
+}
+
+test "util sqlite module declarations are test reachable" {
+    std.testing.refAllDecls(sqlite);
 }

@@ -33,6 +33,7 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    lib_mod.addIncludePath(sqlite_dep.path(""));
     linkPlatformLibraries(lib_mod, target);
 
     const lib = b.addLibrary(.{
