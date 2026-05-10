@@ -44,7 +44,11 @@ fn parsePage(allocator: std.mem.Allocator, page: []const u8, cookies: *std.Array
 
     for (0..count) |i| {
         const offset = readU32LE(page, 8 + i * 4);
-        try cookies.append(allocator, try parseCookie(allocator, page, @as(usize, offset)));
+        const cookie = try parseCookie(allocator, page, @as(usize, offset));
+        var appended = false;
+        errdefer if (!appended) cookie.deinit(allocator);
+        try cookies.append(allocator, cookie);
+        appended = true;
     }
 }
 
@@ -64,6 +68,9 @@ fn parseCookie(allocator: std.mem.Allocator, page: []const u8, offset: usize) !C
     const path_offset = readU32LE(cookie_bytes, 20);
     const value_offset = readU32LE(cookie_bytes, 24);
     const expiry = readF64LE(cookie_bytes, 28);
+    const creation = readF64LE(cookie_bytes, 36);
+    const expires = try appleSecondsToUnixChecked(expiry);
+    _ = try appleSecondsToUnixChecked(creation);
 
     const domain = try cString(cookie_bytes, domain_offset);
     const name = try cString(cookie_bytes, name_offset);
@@ -76,12 +83,21 @@ fn parseCookie(allocator: std.mem.Allocator, page: []const u8, offset: usize) !C
         name,
         value,
         path,
-        time.appleSecondsToUnix(expiry),
+        expires,
         flags & 0x1 != 0,
         flags & 0x4 != 0,
         null,
         .{ .browser = .safari },
     );
+}
+
+fn appleSecondsToUnixChecked(apple_seconds: f64) !i64 {
+    if (!std.math.isFinite(apple_seconds)) return error.InvalidExpiry;
+    const min_i64_float: f64 = @floatFromInt(std.math.minInt(i64));
+    const max_i64_float: f64 = @floatFromInt(std.math.maxInt(i64));
+    if (apple_seconds < min_i64_float or apple_seconds >= max_i64_float) return error.InvalidExpiry;
+    const seconds: i64 = @intFromFloat(apple_seconds);
+    return std.math.add(i64, time.apple_unix_offset_seconds, seconds) catch error.InvalidExpiry;
 }
 
 fn cString(record: []const u8, raw_offset: u32) ![]const u8 {
@@ -122,6 +138,38 @@ test "binarycookies rejects truncated page" {
         0, 1, 0, 0,
     };
     try std.testing.expectError(error.Truncated, parse(std.testing.allocator, blob));
+}
+
+test "binarycookies rejects invalid Apple date doubles without panicking" {
+    const invalids = [_]f64{
+        @bitCast(@as(u64, 0x7ff8_0000_0000_0000)),
+        @bitCast(@as(u64, 0x7ff0_0000_0000_0000)),
+        @bitCast(@as(u64, 0xfff0_0000_0000_0000)),
+        @as(f64, @floatFromInt(std.math.maxInt(i64))) * 2.0,
+    };
+    for (invalids) |expiry| {
+        var blob = std.ArrayList(u8).empty;
+        defer blob.deinit(std.testing.allocator);
+        try appendBlob(std.testing.allocator, &blob, &.{&.{.{ .domain = "example.com", .name = "sid", .path = "/", .value = "abc", .expiry = expiry }}});
+        try std.testing.expectError(error.InvalidExpiry, parse(std.testing.allocator, blob.items));
+    }
+}
+
+test "binarycookies rejects invalid creation double without panicking" {
+    var blob = std.ArrayList(u8).empty;
+    defer blob.deinit(std.testing.allocator);
+    try appendBlob(std.testing.allocator, &blob, &.{&.{.{ .domain = "example.com", .name = "sid", .path = "/", .value = "abc", .creation = @bitCast(@as(u64, 0x7ff8_0000_0000_0000)) }}});
+    try std.testing.expectError(error.InvalidExpiry, parse(std.testing.allocator, blob.items));
+}
+
+test "binarycookies deinitializes parsed cookie when append fails" {
+    var blob = std.ArrayList(u8).empty;
+    defer blob.deinit(std.testing.allocator);
+    try appendBlob(std.testing.allocator, &blob, &.{&.{.{ .domain = "example.com", .name = "sid", .path = "/", .value = "abc" }}});
+
+    var failing = std.testing.FailingAllocator.init(std.testing.allocator, .{ .fail_index = 5 });
+    try std.testing.expectError(error.OutOfMemory, parse(failing.allocator(), blob.items));
+    try std.testing.expect(failing.has_induced_failure);
 }
 
 test "binarycookies parser handles required page, flag, and domain shapes" {

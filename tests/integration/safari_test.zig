@@ -167,6 +167,21 @@ test "safari without explicit file is gated on darwin and darwin-only elsewhere"
     }
 }
 
+test "safari cookies root is darwin-only on non-darwin" {
+    if (builtin.os.tag == .macos) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+
+    const res = try run(std.testing.allocator, &.{ exe, "export", "--browser", "safari", "--safari-cookies-root", root });
+    defer std.testing.allocator.free(res.stdout);
+    defer std.testing.allocator.free(res.stderr);
+    try std.testing.expect(res.term == .Exited);
+    try std.testing.expectEqual(@as(u8, 1), res.term.Exited);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "darwin") != null or std.mem.indexOf(u8, res.stderr, "macOS") != null);
+}
+
 fn appendBlob(allocator: std.mem.Allocator, out: *std.ArrayList(u8), pages: []const []const SafariCookie) !void {
     try out.appendSlice(allocator, "cook");
     try appendU32(out, allocator, @intCast(pages.len), .big);

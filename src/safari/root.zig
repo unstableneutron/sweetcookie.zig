@@ -4,6 +4,7 @@ const Cookie = @import("../Cookie.zig").Cookie;
 const snapshot = @import("../snapshot.zig");
 const binarycookies = @import("binarycookies.zig");
 const paths = @import("paths.zig");
+const builtin = @import("builtin");
 
 pub fn collect(allocator: std.mem.Allocator, options: Options) ![]Cookie {
     const resolved = try resolveCookiesFile(allocator, options);
@@ -35,30 +36,19 @@ fn resolveCookiesFile(allocator: std.mem.Allocator, options: Options) !Resolved 
         return .{ .cookies_file = try allocator.dupe(u8, path) };
     }
 
+    if (builtin.os.tag != .macos) return error.SafariDefaultDiscoveryDarwinOnly;
+
     if (options.safari_cookies_root) |root| {
-        const candidates = try paths.cookieFilesUnderRoot(allocator, root);
-        errdefer paths.freeCookieFiles(allocator, candidates);
-        const selected = try firstExisting(allocator, candidates);
+        const selected = try paths.selectExistingCookieFileWithBackup(allocator, root, options.allow_real_browser, null);
         errdefer allocator.free(selected);
-        return .{ .cookies_file = selected, .candidates = candidates };
+        return .{ .cookies_file = selected };
     }
 
     const candidates = try paths.defaultCookieFiles(allocator, options.allow_real_browser);
     errdefer paths.freeCookieFiles(allocator, candidates);
-    const selected = try firstExisting(allocator, candidates);
+    const selected = try paths.selectExistingFromCandidatesWithBackup(allocator, candidates, options.allow_real_browser, null);
     errdefer allocator.free(selected);
     return .{ .cookies_file = selected, .candidates = candidates };
-}
-
-fn firstExisting(allocator: std.mem.Allocator, candidates: []const []const u8) ![]u8 {
-    for (candidates) |candidate| {
-        std.fs.accessAbsolute(candidate, .{}) catch |err| switch (err) {
-            error.FileNotFound => continue,
-            else => return err,
-        };
-        return allocator.dupe(u8, candidate);
-    }
-    return error.FileNotFound;
 }
 
 test "safari root module declarations are reachable" {
