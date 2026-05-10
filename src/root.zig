@@ -25,6 +25,7 @@ pub const safari = struct {
 };
 pub const chromium = struct {
     pub const crypto = @import("chromium/crypto.zig");
+    pub const secret_macos = @import("chromium/secret_macos.zig");
 };
 
 pub const Browser = CookieMod.Browser;
