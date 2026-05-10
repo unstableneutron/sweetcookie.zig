@@ -1,6 +1,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const Warning = @import("../Result.zig").Warning;
+
 const OSStatus = i32;
 
 extern fn SecKeychainFindGenericPassword(
@@ -27,11 +29,31 @@ pub fn getStorageKey(allocator: std.mem.Allocator, browser_name: []const u8) ![]
     if (try keyFromTestEnv(allocator)) |key| return key;
     if (builtin.os.tag != .macos) return error.UnsupportedPlatform;
 
-    if (try forceNativeFail()) {
-        return fallbackStorageKey(allocator, browser_name);
+    var warnings = std.ArrayList(Warning).empty;
+    defer {
+        for (warnings.items) |warning| {
+            allocator.free(warning.kind);
+            allocator.free(warning.message);
+        }
+        warnings.deinit(allocator);
     }
 
-    return nativeStorageKey(allocator, browser_name) catch fallbackStorageKey(allocator, browser_name);
+    return getStorageKeyWithWarnings(allocator, browser_name, &warnings);
+}
+
+pub fn getStorageKeyWithWarnings(
+    allocator: std.mem.Allocator,
+    browser_name: []const u8,
+    warnings: *std.ArrayList(Warning),
+) ![]u8 {
+    if (try keyFromTestEnv(allocator)) |key| return key;
+    if (builtin.os.tag != .macos) return error.UnsupportedPlatform;
+
+    if (try forceNativeFail()) {
+        return fallbackStorageKey(allocator, browser_name, warnings);
+    }
+
+    return nativeStorageKey(allocator, browser_name) catch fallbackStorageKey(allocator, browser_name, warnings);
 }
 
 fn keyFromTestEnv(allocator: std.mem.Allocator) !?[]u8 {
@@ -82,12 +104,16 @@ fn nativeStorageKey(allocator: std.mem.Allocator, browser_name: []const u8) ![]u
     return allocator.dupe(u8, bytes[0..password_len]);
 }
 
-fn fallbackStorageKey(allocator: std.mem.Allocator, browser_name: []const u8) ![]u8 {
+fn fallbackStorageKey(
+    allocator: std.mem.Allocator,
+    browser_name: []const u8,
+    warnings: *std.ArrayList(Warning),
+) ![]u8 {
     const account = canonicalBrowserName(browser_name);
     const service = try serviceName(allocator, account);
     defer allocator.free(service);
 
-    emitFallbackWarning(account) catch {};
+    try appendFallbackWarning(allocator, browser_name, warnings);
     const result = try std.process.Child.run(.{
         .allocator = allocator,
         .argv = &.{ "security", "find-generic-password", "-gw", "-a", account, "-s", service },
@@ -100,12 +126,15 @@ fn fallbackStorageKey(allocator: std.mem.Allocator, browser_name: []const u8) ![
     return allocator.dupe(u8, std.mem.trimRight(u8, result.stdout, "\r\n"));
 }
 
-fn emitFallbackWarning(browser_name: []const u8) !void {
-    var buffer: [256]u8 = undefined;
-    var writer = std.fs.File.stderr().writer(&buffer);
-    const stderr = &writer.interface;
-    try stderr.print("warning: kind=os-secret-fallback message=<len={d}>\n", .{browser_name.len});
-    try stderr.flush();
+fn appendFallbackWarning(
+    allocator: std.mem.Allocator,
+    browser_name: []const u8,
+    warnings: *std.ArrayList(Warning),
+) !void {
+    try warnings.append(allocator, .{
+        .kind = try allocator.dupe(u8, "os-secret-fallback"),
+        .message = try std.fmt.allocPrint(allocator, "native macOS secret lookup unavailable for {s}", .{browser_name}),
+    });
 }
 
 fn serviceName(allocator: std.mem.Allocator, account: []const u8) ![]u8 {
@@ -190,6 +219,62 @@ test "force native fail falls back to security shim" {
     defer std.testing.allocator.free(key);
 
     try std.testing.expectEqualStrings("shim-key", key);
+}
+
+test "force native fail appends structured fallback warning" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    unsetTestEnv("SWEETCOOKIE_TEST_CHROMIUM_KEY");
+    setTestEnv("SWEETCOOKIE_FORCE_NATIVE_SECRET_FAIL", "1");
+    defer unsetTestEnv("SWEETCOOKIE_FORCE_NATIVE_SECRET_FAIL");
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{
+        .sub_path = "security",
+        .data =
+        \\#!/bin/sh
+        \\printf 'shim-key\n'
+        \\
+        ,
+    });
+    const shim = try tmp.dir.openFile("security", .{});
+    defer shim.close();
+    try shim.chmod(0o755);
+    const tmp_path = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_path);
+
+    const old_path_owned = std.process.getEnvVarOwned(std.testing.allocator, "PATH") catch null;
+    defer if (old_path_owned) |p| std.testing.allocator.free(p);
+    const old_path = old_path_owned orelse "";
+    const old_path_z = if (old_path_owned) |_| try std.testing.allocator.dupeZ(u8, old_path) else null;
+    defer if (old_path_z) |p| std.testing.allocator.free(p);
+    defer {
+        if (old_path_z) |p| {
+            if (setenv("PATH", p, 1) != 0) unreachable;
+        } else {
+            _ = unsetenv("PATH");
+        }
+    }
+    const formatted_path = try std.fmt.allocPrint(std.testing.allocator, "{s}:{s}", .{ tmp_path, old_path });
+    defer std.testing.allocator.free(formatted_path);
+    const new_path = try std.testing.allocator.dupeZ(u8, formatted_path);
+    defer std.testing.allocator.free(new_path);
+    if (setenv("PATH", new_path, 1) != 0) unreachable;
+
+    var warnings = std.ArrayList(Warning).empty;
+    defer {
+        for (warnings.items) |warning| {
+            std.testing.allocator.free(warning.kind);
+            std.testing.allocator.free(warning.message);
+        }
+        warnings.deinit(std.testing.allocator);
+    }
+    const key = try getStorageKeyWithWarnings(std.testing.allocator, "chrome", &warnings);
+    defer std.testing.allocator.free(key);
+
+    try std.testing.expectEqualStrings("shim-key", key);
+    try std.testing.expectEqual(@as(usize, 1), warnings.items.len);
+    try std.testing.expectEqualStrings("os-secret-fallback", warnings.items[0].kind);
 }
 
 test "env var bypass does not spawn security from PATH" {

@@ -99,7 +99,7 @@ fn valueForRow(
 ) !?[]u8 {
     const encrypted_value = encrypted orelse return try allocator.dupe(u8, plain_value);
     if (encrypted_value.len == 0) return try allocator.dupe(u8, plain_value);
-    if (storage_key.* == null) storage_key.* = try getStorageKey(allocator, browser);
+    if (storage_key.* == null) storage_key.* = try getStorageKey(allocator, browser, warnings);
     const decrypted = decryptChromiumValue(allocator, encrypted_value, storage_key.*.?, host, meta_version) catch |err| {
         try appendDecryptWarning(allocator, warnings, err);
         return null;
@@ -156,10 +156,10 @@ fn decryptGcm(allocator: std.mem.Allocator, key: []const u8, payload: []const u8
     return crypto.aes256_gcm_decrypt(allocator, key[0..32], nonce, ciphertext, tag);
 }
 
-fn getStorageKey(allocator: std.mem.Allocator, browser: Browser) ![]u8 {
+fn getStorageKey(allocator: std.mem.Allocator, browser: Browser, warnings: *std.ArrayList(Warning)) ![]u8 {
     return switch (builtin.os.tag) {
-        .macos => secret_macos.getStorageKey(allocator, @tagName(browser)),
-        .linux => secret_linux.getStorageKey(allocator, @tagName(browser)),
+        .macos => secret_macos.getStorageKeyWithWarnings(allocator, @tagName(browser), warnings),
+        .linux => secret_linux.getStorageKeyWithWarnings(allocator, @tagName(browser), warnings),
         .windows => secret_windows.getStorageKey(allocator, @tagName(browser)),
         else => error.UnsupportedPlatform,
     };

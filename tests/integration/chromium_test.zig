@@ -425,6 +425,69 @@ test "chromium broad export requires all domains and wrong key warns while conti
     try std.testing.expectEqualStrings("plain", parsed.value.array.items[0].object.get("name").?.string);
 }
 
+test "chromium macos native secret fallback warning is rendered by cli" {
+    if (@import("builtin").os.tag != .macos) return error.SkipZigTest;
+
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const db_path = try tmpPath(&tmp, &.{"Cookies"});
+    defer std.testing.allocator.free(db_path);
+    const raw_key = "1234567890abcdef";
+    const encrypted = try cbcBlob(std.testing.allocator, "v10", raw_key, "fallback-decrypted");
+    defer std.testing.allocator.free(encrypted);
+    try buildDb(db_path, 23, &.{.{
+        .name = "encrypted",
+        .encrypted_value = encrypted,
+        .host = "example.com",
+        .path = "/",
+        .expires_utc = 13_350_000_000_000_000,
+    }});
+
+    try tmp.dir.makePath("bin");
+    try tmp.dir.writeFile(.{
+        .sub_path = "bin/security",
+        .data =
+        \\#!/bin/sh
+        \\printf '1234567890abcdef\n'
+        \\
+        ,
+    });
+    const shim = try tmp.dir.openFile("bin/security", .{});
+    defer shim.close();
+    try shim.chmod(0o755);
+    const shim_dir = try tmp.dir.realpathAlloc(std.testing.allocator, "bin");
+    defer std.testing.allocator.free(shim_dir);
+    const tmp_root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_root);
+    const old_path_owned = std.process.getEnvVarOwned(std.testing.allocator, "PATH") catch "";
+    defer if (old_path_owned.len != 0) std.testing.allocator.free(old_path_owned);
+    const path = try std.fmt.allocPrint(std.testing.allocator, "{s}:{s}", .{ shim_dir, old_path_owned });
+    defer std.testing.allocator.free(path);
+
+    var env = try std.process.getEnvMap(std.testing.allocator);
+    defer env.deinit();
+    try env.put("PATH", path);
+    try env.put("TMPDIR", tmp_root);
+    try env.put("SWEETCOOKIE_FORCE_NATIVE_SECRET_FAIL", "1");
+    env.remove("SWEETCOOKIE_TEST_CHROMIUM_KEY");
+
+    const res = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &.{ exe, "export", "--browser", "chrome", "--chrome-cookies-db", db_path, "--all-domains", "--include-expired" },
+        .env_map = &env,
+        .max_output_bytes = 1024 * 1024,
+    });
+    defer std.testing.allocator.free(res.stdout);
+    defer std.testing.allocator.free(res.stderr);
+    try expectExit0(res);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "warning: kind=os-secret-fallback") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stdout, "warning:") == null);
+    var parsed = try parseJson(res.stdout);
+    defer parsed.deinit();
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.array.items.len);
+    try std.testing.expectEqualStrings("fallback-decrypted", parsed.value.array.items[0].object.get("value").?.string);
+}
+
 fn exists(path: []const u8) bool {
     std.fs.accessAbsolute(path, .{}) catch return false;
     return true;
