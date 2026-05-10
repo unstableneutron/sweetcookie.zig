@@ -11,11 +11,15 @@ pub const output = @import("output.zig");
 pub const snapshot = @import("snapshot.zig");
 pub const realbrowser = @import("realbrowser.zig");
 pub const sqlite = @import("util/sqlite.zig");
+pub const time = @import("util/time.zig");
 pub const firefox = struct {
     pub const root = @import("firefox/root.zig");
     pub const db = @import("firefox/db.zig");
     pub const profiles_ini = @import("firefox/profiles_ini.zig");
     pub const paths = @import("firefox/paths.zig");
+};
+pub const safari = struct {
+    pub const binarycookies = @import("safari/binarycookies.zig");
 };
 
 pub const Browser = CookieMod.Browser;
@@ -132,4 +136,12 @@ test "util sqlite module declarations are test reachable" {
 
 test "firefox module declarations are test reachable" {
     std.testing.refAllDecls(firefox);
+}
+
+test "safari module declarations are test reachable" {
+    std.testing.refAllDecls(safari);
+}
+
+test "time module declarations are test reachable" {
+    std.testing.refAllDecls(time);
 }
