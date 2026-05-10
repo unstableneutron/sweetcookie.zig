@@ -39,6 +39,7 @@ pub fn main() !void {
     if (std.mem.eql(u8, args[1], "help")) return printHelp();
     if (std.mem.eql(u8, args[1], "version")) return printVersion();
     if (std.mem.eql(u8, args[1], "export")) {
+        if (args.len == 3 and (std.mem.eql(u8, args[2], "--help") or std.mem.eql(u8, args[2], "-h"))) return printHelp();
         const parsed = parseArgs(allocator, args[2..]) catch |err| usageErrorFmt("usage error: {s}\n", .{@errorName(err)});
         defer parsed.deinit(allocator);
         return runExport(allocator, parsed) catch |err| {
@@ -85,6 +86,9 @@ fn printHelp() !void {
         \\OPTIONS:
         \\  -h, --help  Show this help output.
         \\
+        \\EXPORT FORMATS:
+        \\  lightpanda-json, sweet-cookie-json, cookie-header, netscape
+        \\
     );
     try stdout.flush();
 }
@@ -108,6 +112,8 @@ fn runExport(allocator: std.mem.Allocator, parsed: Parsed) !void {
     const writer = buf.writer(allocator);
     if (std.mem.eql(u8, parsed.format, "lightpanda-json")) {
         try sweetcookie.exporter.writeLightpandaJson(writer, result.cookies);
+    } else if (std.mem.eql(u8, parsed.format, "netscape")) {
+        try sweetcookie.exporter.writeNetscapeJar(writer, result.cookies);
     } else if (std.mem.eql(u8, parsed.format, "sweet-cookie-json")) {
         try sweetcookie.exporter.writeSweetCookieJson(writer, result.cookies, .{ .generated_at_unix = std.time.timestamp(), .target_url = parsed.options.url });
     } else if (std.mem.eql(u8, parsed.format, "cookie-header")) {
@@ -210,8 +216,30 @@ fn renderRuntimeError(allocator: std.mem.Allocator, err: anyerror, parsed: Parse
         error.MissingUrl => try printErr("header subcommand requires --url\n", .{}),
         error.NoInputSource => try printErr("no input source provided; pass --inline-json/--inline-file/--inline-base64 or a --browser flag\n", .{}),
         error.AllDomainsConfirmationDeclined => try printErr("broad export declined\n", .{}),
+        error.NetscapeUnencodableValue => {
+            if (std.mem.eql(u8, parsed.format, "netscape")) {
+                const result = sweetcookie.get(allocator, parsed.options) catch null;
+                if (result) |cookies_result| {
+                    defer cookies_result.deinit(allocator);
+                    if (sweetcookie.exporter.firstNetscapeUnencodable(cookies_result.cookies)) |bad| {
+                        try printErr("error.NetscapeUnencodableValue: cookie \"{s}\" contains {s} in {s}\n", .{ bad.name, netscapeByteName(bad.byte), bad.field });
+                        return;
+                    }
+                }
+            }
+            try printErr("runtime error: NetscapeUnencodableValue\n", .{});
+        },
         else => try printErr("runtime error: {s}\n", .{@errorName(err)}),
     }
+}
+
+fn netscapeByteName(byte: u8) []const u8 {
+    return switch (byte) {
+        '\t' => "TAB (0x09)",
+        '\n' => "LF (0x0A)",
+        '\r' => "CR (0x0D)",
+        else => "unencodable byte",
+    };
 }
 
 const JsonLocation = struct {

@@ -74,6 +74,7 @@ pub fn build(b: *std.Build) void {
     addIntegrationTest(b, test_step, "tests/integration/cross_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/firefox_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/output_mode_test.zig", target, optimize);
+    addIntegrationTest(b, test_step, "tests/integration/extra_formats_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/safari_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/chromium_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/real_browser_test.zig", target, optimize);

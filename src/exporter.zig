@@ -8,6 +8,12 @@ pub const ExportMeta = struct {
     origins: []const []const u8 = &.{},
 };
 
+pub const NetscapeUnencodable = struct {
+    name: []const u8,
+    field: []const u8,
+    byte: u8,
+};
+
 pub fn writeLightpandaJson(writer: anytype, cookies: []const Cookie) !void {
     const sorted = try sortedIndexes(std.heap.page_allocator, cookies);
     defer std.heap.page_allocator.free(sorted);
@@ -47,6 +53,38 @@ pub fn writeLightpandaJson(writer: anytype, cookies: []const Cookie) !void {
         try writer.writeByte('}');
     }
     try writer.writeByte(']');
+}
+
+pub fn writeNetscapeJar(writer: anytype, cookies: []const Cookie) !void {
+    if (firstNetscapeUnencodable(cookies) != null) return error.NetscapeUnencodableValue;
+
+    const sorted = try sortedIndexes(std.heap.page_allocator, cookies);
+    defer std.heap.page_allocator.free(sorted);
+
+    try writer.writeAll("# Netscape HTTP Cookie File\n");
+    for (sorted) |idx| {
+        const cookie = cookies[idx];
+        try writer.print("{s}\t{s}\t{s}\t{s}\t", .{
+            cookie.raw_domain,
+            if (std.mem.startsWith(u8, cookie.raw_domain, ".")) "TRUE" else "FALSE",
+            cookie.path,
+            if (cookie.secure) "TRUE" else "FALSE",
+        });
+        if (cookie.expires) |expires| {
+            try writer.print("{d}", .{expires});
+        } else {
+            try writer.writeByte('0');
+        }
+        try writer.print("\t{s}\t{s}\n", .{ cookie.name, cookie.value });
+    }
+}
+
+pub fn firstNetscapeUnencodable(cookies: []const Cookie) ?NetscapeUnencodable {
+    for (cookies) |cookie| {
+        if (firstControlByte(cookie.name)) |byte| return .{ .name = cookie.name, .field = "name", .byte = byte };
+        if (firstControlByte(cookie.value)) |byte| return .{ .name = cookie.name, .field = "value", .byte = byte };
+    }
+    return null;
 }
 
 pub fn writeSweetCookieJson(writer: anytype, cookies: []const Cookie, meta: ExportMeta) !void {
@@ -146,6 +184,14 @@ fn writeJsonString(writer: anytype, s: []const u8) !void {
         else => try writer.writeByte(c),
     };
     try writer.writeByte('"');
+}
+
+fn firstControlByte(value: []const u8) ?u8 {
+    for (value) |byte| switch (byte) {
+        '\t', '\n', '\r' => return byte,
+        else => {},
+    };
+    return null;
 }
 
 fn sameSiteText(same_site: @import("Cookie.zig").SameSite) []const u8 {
@@ -282,6 +328,80 @@ test "VAL-EXPORT-013 sweet-cookie determinism differs only in generatedAt" {
     try std.testing.expectEqual(c1.len, c2.len);
     try std.testing.expectEqualStrings(c1[0].object.get("name").?.string, c2[0].object.get("name").?.string);
     try std.testing.expectEqualStrings(c1[0].object.get("raw_domain").?.string, c2[0].object.get("raw_domain").?.string);
+}
+
+test "VAL-NETSCAPE-001 through VAL-NETSCAPE-011 writes exact rows" {
+    var cookies = try std.testing.allocator.alloc(Cookie, 3);
+    defer freeCookies(std.testing.allocator, cookies);
+    cookies[0] = try Cookie.fromRawDomain(std.testing.allocator, ".example.com", "sid", "abc", "/", 1750000000, true, true, .Lax, .{});
+    cookies[1] = try Cookie.fromRawDomain(std.testing.allocator, "example.com", "host", "def", "/app", null, false, false, null, .{});
+    cookies[2] = try Cookie.fromRawDomain(std.testing.allocator, "other.com", "zzz", "", "/", null, false, false, null, .{});
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+    try writeNetscapeJar(out.writer(std.testing.allocator), cookies);
+
+    try std.testing.expect(!std.mem.containsAtLeast(u8, out.items, 1, "\r"));
+    try std.testing.expect(!std.mem.containsAtLeast(u8, out.items, 1, "#HttpOnly_"));
+    try std.testing.expectEqualStrings(
+        "# Netscape HTTP Cookie File\nexample.com\tFALSE\t/app\tFALSE\t0\thost\tdef\n.example.com\tTRUE\t/\tTRUE\t1750000000\tsid\tabc\nother.com\tFALSE\t/\tFALSE\t0\tzzz\t\n",
+        out.items,
+    );
+
+    var line_it = std.mem.splitScalar(u8, out.items, '\n');
+    _ = line_it.next().?;
+    while (line_it.next()) |line| {
+        if (line.len == 0) continue;
+        try std.testing.expectEqual(@as(usize, 6), std.mem.count(u8, line, "\t"));
+    }
+}
+
+test "VAL-NETSCAPE-012 through VAL-NETSCAPE-014 rejects tab lf cr in name and value" {
+    const bad_inputs = [_]struct {
+        name: []const u8,
+        value: []const u8,
+    }{
+        .{ .name = "tab", .value = "a\tb" },
+        .{ .name = "lf", .value = "a\nb" },
+        .{ .name = "cr", .value = "a\rb" },
+        .{ .name = "bad\tname", .value = "ok" },
+    };
+    for (bad_inputs) |bad| {
+        var cookies = try std.testing.allocator.alloc(Cookie, 1);
+        defer freeCookies(std.testing.allocator, cookies);
+        cookies[0] = try Cookie.fromRawDomain(std.testing.allocator, "example.com", bad.name, bad.value, "/", null, false, false, null, .{});
+        var out = std.ArrayList(u8).empty;
+        defer out.deinit(std.testing.allocator);
+        try std.testing.expectError(error.NetscapeUnencodableValue, writeNetscapeJar(out.writer(std.testing.allocator), cookies));
+    }
+}
+
+test "VAL-NETSCAPE-016 and VAL-NETSCAPE-017 sorts by name lowercased domain path deterministically" {
+    var cookies = try std.testing.allocator.alloc(Cookie, 4);
+    defer freeCookies(std.testing.allocator, cookies);
+    cookies[0] = try Cookie.fromRawDomain(std.testing.allocator, "z.example", "b", "1", "/", null, false, false, null, .{});
+    cookies[1] = try Cookie.fromRawDomain(std.testing.allocator, "Example.com", "a", "2", "/b", null, false, false, null, .{});
+    cookies[2] = try Cookie.fromRawDomain(std.testing.allocator, "example.com", "a", "3", "/a", null, false, false, null, .{});
+    cookies[3] = try Cookie.fromRawDomain(std.testing.allocator, "alpha.example", "a", "4", "/", null, false, false, null, .{});
+
+    var out1 = std.ArrayList(u8).empty;
+    var out2 = std.ArrayList(u8).empty;
+    defer out1.deinit(std.testing.allocator);
+    defer out2.deinit(std.testing.allocator);
+    try writeNetscapeJar(out1.writer(std.testing.allocator), cookies);
+    try writeNetscapeJar(out2.writer(std.testing.allocator), cookies);
+    try std.testing.expectEqualStrings(out1.items, out2.items);
+    try std.testing.expectEqualStrings(
+        "# Netscape HTTP Cookie File\nalpha.example\tFALSE\t/\tFALSE\t0\ta\t4\nexample.com\tFALSE\t/a\tFALSE\t0\ta\t3\nExample.com\tFALSE\t/b\tFALSE\t0\ta\t2\nz.example\tFALSE\t/\tFALSE\t0\tb\t1\n",
+        out1.items,
+    );
+}
+
+test "VAL-NETSCAPE-018 empty input is header only" {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+    try writeNetscapeJar(out.writer(std.testing.allocator), &.{});
+    try std.testing.expectEqualStrings("# Netscape HTTP Cookie File\n", out.items);
 }
 
 fn testCookies(allocator: std.mem.Allocator) ![]Cookie {
