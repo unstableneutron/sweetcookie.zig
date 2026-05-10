@@ -62,4 +62,12 @@ test "VAL-CROSS-007 output mode 0600 across all export formats" {
     defer std.testing.allocator.free(header.stderr);
     try expectExit0(header);
     try assertMode0600(header_path);
+
+    const httpie_path = try tmpPath(&tmp, "httpie.json");
+    defer std.testing.allocator.free(httpie_path);
+    const httpie = try run(std.testing.allocator, &.{ "zig-out/bin/sweetcookie", "export", "--inline-file", in_path, "--format", "httpie", "--output", httpie_path });
+    defer std.testing.allocator.free(httpie.stdout);
+    defer std.testing.allocator.free(httpie.stderr);
+    try expectExit0(httpie);
+    try assertMode0600(httpie_path);
 }

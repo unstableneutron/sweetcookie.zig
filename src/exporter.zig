@@ -151,6 +151,62 @@ pub fn writePuppeteerCookies(writer: anytype, cookies: []const Cookie) !void {
     try writer.writeByte(']');
 }
 
+pub fn writeHttpieSession(writer: anytype, cookies: []const Cookie) !void {
+    const sorted = try sortedIndexes(std.heap.page_allocator, cookies);
+    defer std.heap.page_allocator.free(sorted);
+
+    try writer.writeAll("{\"cookies\":{");
+    var emitted: usize = 0;
+    var previous_name: ?[]const u8 = null;
+    for (sorted) |idx| {
+        const cookie = cookies[idx];
+        if (previous_name) |name| {
+            if (std.mem.eql(u8, name, cookie.name)) continue;
+        }
+        previous_name = cookie.name;
+        if (emitted > 0) try writer.writeByte(',');
+        try writeJsonString(writer, cookie.name);
+        try writer.writeAll(":{");
+        try writeField(writer, "value", cookie.value);
+        try writer.writeByte(',');
+        try writer.writeAll("\"expires\":");
+        if (cookie.expires) |expires| {
+            try writer.print("{d}", .{expires});
+        } else {
+            try writer.writeAll("null");
+        }
+        try writer.writeByte(',');
+        try writeField(writer, "path", cookie.path);
+        try writer.writeByte(',');
+        try writer.writeAll("\"secure\":");
+        try writer.writeAll(if (cookie.secure) "true" else "false");
+        try writer.writeByte(',');
+        try writeField(writer, "domain", cookie.raw_domain);
+        try writer.writeByte('}');
+        emitted += 1;
+    }
+    try writer.writeAll("}}");
+}
+
+pub fn httpieCollisionCount(cookies: []const Cookie) !usize {
+    const sorted = try sortedIndexes(std.heap.page_allocator, cookies);
+    defer std.heap.page_allocator.free(sorted);
+
+    var collisions: usize = 0;
+    var previous_name: ?[]const u8 = null;
+    for (sorted) |idx| {
+        const name = cookies[idx].name;
+        if (previous_name) |previous| {
+            if (std.mem.eql(u8, previous, name)) {
+                collisions += 1;
+                continue;
+            }
+        }
+        previous_name = name;
+    }
+    return collisions;
+}
+
 pub fn firstNetscapeUnencodable(cookies: []const Cookie) ?NetscapeUnencodable {
     for (cookies) |cookie| {
         if (firstControlByte(cookie.name)) |byte| return .{ .name = cookie.name, .field = "name", .byte = byte };
@@ -598,6 +654,71 @@ test "VAL-PUPPETEER-001 escapes JSON control bytes" {
     const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.items, .{});
     defer parsed.deinit();
     try std.testing.expectEqualStrings("a\x01b", parsed.value.array.items[0].object.get("value").?.string);
+}
+
+test "VAL-HTTPIE-001 through VAL-HTTPIE-008 writes cookies-only name-keyed object" {
+    var cookies = try std.testing.allocator.alloc(Cookie, 3);
+    defer freeCookies(std.testing.allocator, cookies);
+    cookies[0] = try Cookie.fromRawDomain(std.testing.allocator, "z.example", "b", "plain", "/", null, true, false, null, .{});
+    cookies[1] = try Cookie.fromRawDomain(std.testing.allocator, ".Example.com", "a", "persistent", "/b", 1750000000, false, true, .Strict, .{});
+    cookies[2] = try Cookie.fromRawDomain(std.testing.allocator, ".example.com", "a", "session", "/a", null, true, true, .Lax, .{});
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+    try writeHttpieSession(out.writer(std.testing.allocator), cookies);
+
+    try std.testing.expectEqualStrings(
+        "{\"cookies\":{\"a\":{\"value\":\"session\",\"expires\":null,\"path\":\"/a\",\"secure\":true,\"domain\":\".example.com\"},\"b\":{\"value\":\"plain\",\"expires\":null,\"path\":\"/\",\"secure\":true,\"domain\":\"z.example\"}}}",
+        out.items,
+    );
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, std.testing.allocator, out.items, .{});
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .object);
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.object.count());
+    try std.testing.expect(parsed.value.object.get("headers") == null);
+    try std.testing.expect(parsed.value.object.get("auth") == null);
+    const parsed_cookies = parsed.value.object.get("cookies").?.object;
+    try std.testing.expectEqual(@as(usize, 2), parsed_cookies.count());
+    const a = parsed_cookies.get("a").?.object;
+    try std.testing.expect(a.get("value") != null);
+    try std.testing.expect(a.get("expires") != null);
+    try std.testing.expect(a.get("path") != null);
+    try std.testing.expect(a.get("secure") != null);
+    try std.testing.expect(a.get("domain") != null);
+    try std.testing.expect(a.get("expires").? == .null);
+    try std.testing.expect(a.get("secure").?.bool);
+    try std.testing.expectEqualStrings(".example.com", a.get("domain").?.string);
+}
+
+test "VAL-HTTPIE-005 and VAL-HTTPIE-011 sorted first duplicate name wins" {
+    var cookies = try std.testing.allocator.alloc(Cookie, 4);
+    defer freeCookies(std.testing.allocator, cookies);
+    cookies[0] = try Cookie.fromRawDomain(std.testing.allocator, "z.example", "b", "bee", "/", null, false, false, null, .{});
+    cookies[1] = try Cookie.fromRawDomain(std.testing.allocator, "z.example", "a", "last", "/", null, false, false, null, .{});
+    cookies[2] = try Cookie.fromRawDomain(std.testing.allocator, ".Example.com", "a", "second", "/b", 1750000000, false, false, null, .{});
+    cookies[3] = try Cookie.fromRawDomain(std.testing.allocator, ".example.com", "a", "first", "/a", 1750000000, false, false, null, .{});
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(std.testing.allocator);
+    try writeHttpieSession(out.writer(std.testing.allocator), cookies);
+
+    try std.testing.expectEqualStrings(
+        "{\"cookies\":{\"a\":{\"value\":\"first\",\"expires\":1750000000,\"path\":\"/a\",\"secure\":false,\"domain\":\".example.com\"},\"b\":{\"value\":\"bee\",\"expires\":null,\"path\":\"/\",\"secure\":false,\"domain\":\"z.example\"}}}",
+        out.items,
+    );
+    try std.testing.expectEqual(@as(usize, 2), try httpieCollisionCount(cookies));
+}
+
+test "VAL-HTTPIE-010 and VAL-HTTPIE-012 empty input is stable empty cookies object" {
+    var out1 = std.ArrayList(u8).empty;
+    var out2 = std.ArrayList(u8).empty;
+    defer out1.deinit(std.testing.allocator);
+    defer out2.deinit(std.testing.allocator);
+    try writeHttpieSession(out1.writer(std.testing.allocator), &.{});
+    try writeHttpieSession(out2.writer(std.testing.allocator), &.{});
+    try std.testing.expectEqualStrings("{\"cookies\":{}}", out1.items);
+    try std.testing.expectEqualStrings(out1.items, out2.items);
 }
 
 fn testCookies(allocator: std.mem.Allocator) ![]Cookie {

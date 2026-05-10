@@ -87,7 +87,7 @@ fn printHelp() !void {
         \\  -h, --help  Show this help output.
         \\
         \\EXPORT FORMATS:
-        \\  lightpanda-json, sweet-cookie-json, cookie-header, netscape, playwright, puppeteer
+        \\  lightpanda-json, sweet-cookie-json, cookie-header, netscape, playwright, puppeteer, httpie
         \\
     );
     try stdout.flush();
@@ -118,6 +118,9 @@ fn runExport(allocator: std.mem.Allocator, parsed: Parsed) !void {
         try sweetcookie.exporter.writePlaywrightStorageState(writer, result.cookies);
     } else if (std.mem.eql(u8, parsed.format, "puppeteer")) {
         try sweetcookie.exporter.writePuppeteerCookies(writer, result.cookies);
+    } else if (std.mem.eql(u8, parsed.format, "httpie")) {
+        try sweetcookie.exporter.writeHttpieSession(writer, result.cookies);
+        try emitHttpieCollisionWarnings(result.cookies);
     } else if (std.mem.eql(u8, parsed.format, "sweet-cookie-json")) {
         try sweetcookie.exporter.writeSweetCookieJson(writer, result.cookies, .{ .generated_at_unix = std.time.timestamp(), .target_url = parsed.options.url });
     } else if (std.mem.eql(u8, parsed.format, "cookie-header")) {
@@ -376,6 +379,13 @@ fn nextArg(args: []const [:0]u8, i: *usize) ![]const u8 {
 fn emitWarnings(warnings: []const sweetcookie.Warning) !void {
     for (warnings) |w| {
         try printErr("warning: kind={s} message=<len={d}>\n", .{ w.kind, w.message.len });
+    }
+}
+
+fn emitHttpieCollisionWarnings(cookies: []const sweetcookie.Cookie) !void {
+    const collisions = try sweetcookie.exporter.httpieCollisionCount(cookies);
+    for (0..collisions) |_| {
+        try printErr("warning: kind=httpie-collision message=<len=48>\n", .{});
     }
 }
 

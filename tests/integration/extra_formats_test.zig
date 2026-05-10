@@ -538,3 +538,135 @@ test "export help lists puppeteer format" {
     try expectExit0(res);
     try std.testing.expect(std.mem.containsAtLeast(u8, res.stdout, 1, "puppeteer"));
 }
+
+test "VAL-HTTPIE-001 through VAL-HTTPIE-012 session shape mode determinism and collision warning" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{
+        .sub_path = "in.json",
+        .data =
+        \\[
+        \\  {"name":"b","value":"bee","domain":"z.example","path":"/","secure":true},
+        \\  {"name":"a","value":"persistent","domain":".Example.com","path":"/b","expires":1750000000},
+        \\  {"name":"a","value":"session","domain":".example.com","path":"/a","secure":true}
+        \\]
+        ,
+    });
+    const in_path = try tmp.dir.realpathAlloc(std.testing.allocator, "in.json");
+    defer std.testing.allocator.free(in_path);
+    const out1_path = try tmpPath(&tmp, &.{"session1.json"});
+    defer std.testing.allocator.free(out1_path);
+    const out2_path = try tmpPath(&tmp, &.{"session2.json"});
+    defer std.testing.allocator.free(out2_path);
+
+    const first = try run(std.testing.allocator, &.{ exe, "export", "--inline-file", in_path, "--include-expired", "--format", "httpie", "--output", out1_path });
+    defer std.testing.allocator.free(first.stdout);
+    defer std.testing.allocator.free(first.stderr);
+    try expectExit0(first);
+    try assertMode0600(out1_path);
+    try std.testing.expect(std.mem.containsAtLeast(u8, first.stderr, 1, "warning: kind=httpie-collision"));
+
+    const second = try run(std.testing.allocator, &.{ exe, "export", "--inline-file", in_path, "--include-expired", "--format", "httpie", "--output", out2_path });
+    defer std.testing.allocator.free(second.stdout);
+    defer std.testing.allocator.free(second.stderr);
+    try expectExit0(second);
+    try assertMode0600(out2_path);
+
+    const bytes1 = try readFile(out1_path);
+    defer std.testing.allocator.free(bytes1);
+    const bytes2 = try readFile(out2_path);
+    defer std.testing.allocator.free(bytes2);
+    try std.testing.expectEqualSlices(u8, bytes1, bytes2);
+    try std.testing.expectEqualStrings(
+        "{\"cookies\":{\"a\":{\"value\":\"session\",\"expires\":null,\"path\":\"/a\",\"secure\":true,\"domain\":\".example.com\"},\"b\":{\"value\":\"bee\",\"expires\":null,\"path\":\"/\",\"secure\":true,\"domain\":\"z.example\"}}}",
+        bytes1,
+    );
+
+    var parsed = try parseJson(bytes1);
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .object);
+    try std.testing.expectEqual(@as(usize, 1), parsed.value.object.count());
+    try std.testing.expect(parsed.value.object.get("headers") == null);
+    try std.testing.expect(parsed.value.object.get("auth") == null);
+    const cookies = parsed.value.object.get("cookies").?.object;
+    try std.testing.expectEqual(@as(usize, 2), cookies.count());
+    const a = cookies.get("a").?.object;
+    try std.testing.expectEqualStrings("session", a.get("value").?.string);
+    try std.testing.expect(a.get("expires").? == .null);
+    try std.testing.expectEqualStrings("/a", a.get("path").?.string);
+    try std.testing.expect(a.get("secure").?.bool);
+    try std.testing.expectEqualStrings(".example.com", a.get("domain").?.string);
+    const b = cookies.get("b").?.object;
+    try std.testing.expect(b.get("secure").?.bool);
+}
+
+test "VAL-HTTPIE-005 persistent expiry is numeric when no name collision" {
+    const res = try run(std.testing.allocator, &.{ exe, "export", "--inline-json", "[{\"name\":\"persist\",\"value\":\"v\",\"domain\":\"example.com\",\"path\":\"/\",\"expires\":1750000000}]", "--include-expired", "--format", "httpie" });
+    defer std.testing.allocator.free(res.stdout);
+    defer std.testing.allocator.free(res.stderr);
+    try expectExit0(res);
+    var parsed = try parseJson(res.stdout);
+    defer parsed.deinit();
+    const expires = parsed.value.object.get("cookies").?.object.get("persist").?.object.get("expires").?;
+    try std.testing.expectEqual(@as(i64, 1750000000), expires.integer);
+}
+
+test "VAL-HTTPIE-012 empty input yields empty cookies object" {
+    const res = try run(std.testing.allocator, &.{ exe, "export", "--inline-json", "[]", "--format", "httpie" });
+    defer std.testing.allocator.free(res.stdout);
+    defer std.testing.allocator.free(res.stderr);
+    try expectExit0(res);
+    try std.testing.expectEqualStrings("{\"cookies\":{}}\n", res.stdout);
+}
+
+test "VAL-HTTPIE-014 firefox source unchanged and VAL-HTTPIE-015 filters flow through" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{
+        .sub_path = "profiles.ini",
+        .data =
+        \\[Profile0]
+        \\Name=default
+        \\IsRelative=1
+        \\Path=default
+        \\Default=1
+        \\
+        ,
+    });
+    try tmp.dir.makePath("default");
+    const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(root);
+    const db_path = try std.fs.path.join(std.testing.allocator, &.{ root, "default", "cookies.sqlite" });
+    defer std.testing.allocator.free(db_path);
+    try buildFirefoxDb(db_path, &.{
+        .{ .name = "sid", .value = "keep", .host = ".example.com", .path = "/", .expiry = 4102444800, .secure = true, .httponly = true },
+        .{ .name = "sid", .value = "expired", .host = ".example.com", .path = "/old", .expiry = 1 },
+        .{ .name = "other", .value = "drop", .host = "other.com", .path = "/", .expiry = 4102444800 },
+    });
+    const before = try fileState(db_path);
+    const out_path = try tmpPath(&tmp, &.{"firefox-httpie.json"});
+    defer std.testing.allocator.free(out_path);
+
+    const res = try runWithTmp(std.testing.allocator, &.{ exe, "export", "--browser", "firefox", "--firefox-profile-root", root, "--url", "https://example.com/", "--name", "sid", "--format", "httpie", "--output", out_path }, root);
+    defer std.testing.allocator.free(res.stdout);
+    defer std.testing.allocator.free(res.stderr);
+    try expectExit0(res);
+    try expectUnchanged(db_path, before);
+    try assertMode0600(out_path);
+    const bytes = try readFile(out_path);
+    defer std.testing.allocator.free(bytes);
+    var parsed = try parseJson(bytes);
+    defer parsed.deinit();
+    const cookies = parsed.value.object.get("cookies").?.object;
+    try std.testing.expectEqual(@as(usize, 1), cookies.count());
+    try std.testing.expectEqualStrings("keep", cookies.get("sid").?.object.get("value").?.string);
+    try std.testing.expectEqualStrings(".example.com", cookies.get("sid").?.object.get("domain").?.string);
+}
+
+test "export help lists httpie format" {
+    const res = try run(std.testing.allocator, &.{ exe, "export", "--help" });
+    defer std.testing.allocator.free(res.stdout);
+    defer std.testing.allocator.free(res.stderr);
+    try expectExit0(res);
+    try std.testing.expect(std.mem.containsAtLeast(u8, res.stdout, 1, "httpie"));
+}
