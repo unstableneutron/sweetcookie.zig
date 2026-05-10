@@ -158,7 +158,7 @@ fn printErr(comptime fmt: []const u8, args: anytype) !void {
 }
 
 fn parseArgs(allocator: std.mem.Allocator, args: []const [:0]u8) !Parsed {
-    var out = Parsed{};
+    var out = Parsed{ .options = .{ .allow_real_browser = sweetcookie.realbrowser.allowRealBrowserFromEnv() } };
     var origins = std.ArrayList([]const u8).empty;
     defer origins.deinit(allocator);
     var names = std.ArrayList([]const u8).empty;

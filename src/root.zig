@@ -8,6 +8,8 @@ const filter = @import("filter.zig");
 const dedupe = @import("dedupe.zig");
 pub const exporter = @import("exporter.zig");
 pub const output = @import("output.zig");
+pub const snapshot = @import("snapshot.zig");
+pub const realbrowser = @import("realbrowser.zig");
 
 pub const Browser = CookieMod.Browser;
 pub const SameSite = CookieMod.SameSite;

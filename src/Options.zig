@@ -20,6 +20,7 @@ pub const Options = struct {
     names: []const []const u8 = &.{},
     include_expired: bool = false,
     all_domains: bool = false,
+    allow_real_browser: bool = false,
     firefox_profile: ?[]const u8 = null,
     firefox_profile_root: ?[]const u8 = null,
     firefox_cookies_file: ?[]const u8 = null,
