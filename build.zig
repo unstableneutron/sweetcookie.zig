@@ -77,6 +77,8 @@ pub fn build(b: *std.Build) void {
     addIntegrationTest(b, test_step, "tests/integration/output_mode_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/safari_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/integration/chromium_test.zig", target, optimize);
+    addIntegrationTest(b, test_step, "tests/integration/real_browser_test.zig", target, optimize);
+    addIntegrationTest(b, test_step, "tests/integration/all_domains_tuistory_test.zig", target, optimize);
     addIntegrationTest(b, test_step, "tests/fixtures/sqlite_fixture_tests.zig", target, optimize);
 
     const api_smoke_mod = b.createModule(.{

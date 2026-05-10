@@ -8,6 +8,7 @@ const Parsed = struct {
     format: []const u8 = "lightpanda-json",
     output: ?[]const u8 = null,
     debug: bool = false,
+    yes: bool = false,
 
     fn deinit(self: Parsed, allocator: std.mem.Allocator) void {
         allocator.free(self.options.origins);
@@ -95,6 +96,7 @@ fn runExport(allocator: std.mem.Allocator, parsed: Parsed) !void {
     if (requiresAllDomains(parsed.options)) {
         return usageErrorFmt("chromium broad export requires --all-domains\n", .{});
     }
+    try confirmAllDomainsIfNeeded(parsed);
 
     const result = try sweetcookie.get(allocator, parsed.options);
     defer result.deinit(allocator);
@@ -207,6 +209,7 @@ fn renderRuntimeError(allocator: std.mem.Allocator, err: anyerror, parsed: Parse
         error.CannotOpen => try printErr("file not found or cannot open\n", .{}),
         error.MissingUrl => try printErr("header subcommand requires --url\n", .{}),
         error.NoInputSource => try printErr("no input source provided; pass --inline-json/--inline-file/--inline-base64 or a --browser flag\n", .{}),
+        error.AllDomainsConfirmationDeclined => try printErr("broad export declined\n", .{}),
         else => try printErr("runtime error: {s}\n", .{@errorName(err)}),
     }
 }
@@ -295,6 +298,8 @@ fn parseArgs(allocator: std.mem.Allocator, args: []const [:0]u8) !Parsed {
             out.options.mode = try parseMode(try nextArg(args, &i));
         } else if (std.mem.eql(u8, arg, "--all-domains")) {
             out.options.all_domains = true;
+        } else if (std.mem.eql(u8, arg, "--yes")) {
+            out.yes = true;
         } else if (std.mem.eql(u8, arg, "--firefox-profile")) {
             out.options.firefox_profile = try nextArg(args, &i);
         } else if (std.mem.eql(u8, arg, "--firefox-profile-root")) {
@@ -346,4 +351,27 @@ fn debugCookies(cookies: []const sweetcookie.Cookie) !void {
     for (cookies) |c| {
         try printErr("debug: cookie name={s} domain={s} path={s} value=<len={d}>\n", .{ c.name, c.domain, c.path, c.value.len });
     }
+}
+
+fn confirmAllDomainsIfNeeded(parsed: Parsed) !void {
+    if (!parsed.options.all_domains or parsed.yes) return;
+    if (!std.fs.File.stdin().isTty()) return;
+
+    try printErr("Broad export of cookies will include credentials. Type \"yes\" to continue: ", .{});
+    var input_buf: [64]u8 = undefined;
+    var stdin_reader = std.fs.File.stdin().reader(&input_buf);
+    const stdin = &stdin_reader.interface;
+    var answer: [8]u8 = undefined;
+    var len: usize = 0;
+    while (true) {
+        const byte = stdin.takeByte() catch |err| switch (err) {
+            error.EndOfStream => return error.AllDomainsConfirmationDeclined,
+            else => return err,
+        };
+        if (byte == '\n' or byte == '\r') break;
+        if (len >= answer.len) return error.AllDomainsConfirmationDeclined;
+        answer[len] = byte;
+        len += 1;
+    }
+    if (!std.mem.eql(u8, answer[0..len], "yes")) return error.AllDomainsConfirmationDeclined;
 }
