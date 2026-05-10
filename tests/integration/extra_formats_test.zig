@@ -43,6 +43,10 @@ fn expectExit0(res: std.process.Child.RunResult) !void {
     try std.testing.expectEqual(@as(u8, 0), res.term.Exited);
 }
 
+fn parseJson(bytes: []const u8) !std.json.Parsed(std.json.Value) {
+    return std.json.parseFromSlice(std.json.Value, std.testing.allocator, bytes, .{});
+}
+
 fn tmpPath(tmp: *std.testing.TmpDir, parts: []const []const u8) ![]u8 {
     const root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
     defer std.testing.allocator.free(root);
@@ -123,6 +127,32 @@ fn buildFirefoxDb(db_path: []const u8, entries: []const FirefoxCookie) !void {
         try writer.print(", {d}, 0, 0, {d}, {d}, 0, 0, 0, 0);\n", .{ entry.expiry, @intFromBool(entry.secure), @intFromBool(entry.httponly) });
     }
     try writer.writeAll("COMMIT;\nVACUUM;\n");
+    const res = try std.process.Child.run(.{
+        .allocator = std.testing.allocator,
+        .argv = &.{ "sqlite3", "-batch", db_path, sql.items },
+        .max_output_bytes = 1024 * 1024,
+    });
+    defer std.testing.allocator.free(res.stdout);
+    defer std.testing.allocator.free(res.stderr);
+    try std.testing.expectEqual(std.process.Child.Term{ .Exited = 0 }, res.term);
+}
+
+fn buildChromiumDb(db_path: []const u8) !void {
+    var sql = std.ArrayList(u8).empty;
+    defer sql.deinit(std.testing.allocator);
+    const writer = sql.writer(std.testing.allocator);
+    try writer.writeAll(
+        \\PRAGMA journal_mode=DELETE;
+        \\CREATE TABLE cookies(creation_utc INTEGER NOT NULL DEFAULT 0, host_key TEXT NOT NULL, top_frame_site_key TEXT NOT NULL DEFAULT '', name TEXT NOT NULL, value TEXT NOT NULL, encrypted_value BLOB NOT NULL, path TEXT NOT NULL, expires_utc INTEGER NOT NULL, is_secure INTEGER NOT NULL, is_httponly INTEGER NOT NULL, last_access_utc INTEGER NOT NULL DEFAULT 0, has_expires INTEGER NOT NULL DEFAULT 1, is_persistent INTEGER NOT NULL DEFAULT 1, priority INTEGER NOT NULL DEFAULT 1, samesite INTEGER NOT NULL DEFAULT -1, source_scheme INTEGER NOT NULL DEFAULT 0, source_port INTEGER NOT NULL DEFAULT -1, is_same_party INTEGER NOT NULL DEFAULT 0, last_update_utc INTEGER NOT NULL DEFAULT 0);
+        \\CREATE TABLE meta(key LONGVARCHAR NOT NULL UNIQUE PRIMARY KEY, value LONGVARCHAR);
+        \\INSERT INTO meta(key, value) VALUES('version', '23');
+        \\BEGIN;
+        \\INSERT INTO cookies(host_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly, has_expires, is_persistent, samesite) VALUES('.example.com', 'sid', 'keep', X'', '/', 13350000000000000, 1, 1, 1, 1, 1);
+        \\INSERT INTO cookies(host_key, name, value, encrypted_value, path, expires_utc, is_secure, is_httponly, has_expires, is_persistent, samesite) VALUES('other.com', 'other', 'drop', X'', '/', 13350000000000000, 0, 0, 1, 1, -1);
+        \\COMMIT;
+        \\VACUUM;
+        \\
+    );
     const res = try std.process.Child.run(.{
         .allocator = std.testing.allocator,
         .argv = &.{ "sqlite3", "-batch", db_path, sql.items },
@@ -262,4 +292,118 @@ test "VAL-NETSCAPE-021 firefox source bytes unchanged" {
     try expectExit0(res);
     try expectUnchanged(db_path, before);
     try assertMode0600(out_path);
+}
+
+test "VAL-PLAYWRIGHT-001 through VAL-PLAYWRIGHT-013 storage state file shape mode and determinism" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.writeFile(.{
+        .sub_path = "in.json",
+        .data =
+        \\[
+        \\  {"name":"b","value":"bee","domain":"z.example","path":"/","secure":true,"httpOnly":false,"sameSite":"None"},
+        \\  {"name":"a","value":"strict","domain":".Example.com","path":"/b","expires":1750000000,"secure":false,"httpOnly":true,"sameSite":"Strict"},
+        \\  {"name":"a","value":"lax","domain":".example.com","path":"/a","secure":true,"httpOnly":true,"sameSite":"Lax"},
+        \\  {"name":"no-site","value":"none","domain":"example.com","path":"/"}
+        \\]
+        ,
+    });
+    const in_path = try tmp.dir.realpathAlloc(std.testing.allocator, "in.json");
+    defer std.testing.allocator.free(in_path);
+    const out1_path = try tmpPath(&tmp, &.{"state1.json"});
+    defer std.testing.allocator.free(out1_path);
+    const out2_path = try tmpPath(&tmp, &.{"state2.json"});
+    defer std.testing.allocator.free(out2_path);
+
+    const first = try run(std.testing.allocator, &.{ exe, "export", "--inline-file", in_path, "--include-expired", "--format", "playwright", "--output", out1_path });
+    defer std.testing.allocator.free(first.stdout);
+    defer std.testing.allocator.free(first.stderr);
+    try expectExit0(first);
+    try assertMode0600(out1_path);
+
+    const second = try run(std.testing.allocator, &.{ exe, "export", "--inline-file", in_path, "--include-expired", "--format", "playwright", "--output", out2_path });
+    defer std.testing.allocator.free(second.stdout);
+    defer std.testing.allocator.free(second.stderr);
+    try expectExit0(second);
+    try assertMode0600(out2_path);
+
+    const bytes1 = try readFile(out1_path);
+    defer std.testing.allocator.free(bytes1);
+    const bytes2 = try readFile(out2_path);
+    defer std.testing.allocator.free(bytes2);
+    try std.testing.expectEqualSlices(u8, bytes1, bytes2);
+    try std.testing.expect(bytes1.len > 0 and bytes1[bytes1.len - 1] != '\n');
+
+    const jq = try run(std.testing.allocator, &.{ "jq", ".", out1_path });
+    defer std.testing.allocator.free(jq.stdout);
+    defer std.testing.allocator.free(jq.stderr);
+    try expectExit0(jq);
+    const node_script = try std.fmt.allocPrint(std.testing.allocator, "JSON.parse(require('fs').readFileSync('{s}', 'utf8'))", .{out1_path});
+    defer std.testing.allocator.free(node_script);
+    const node = try run(std.testing.allocator, &.{ "node", "-e", node_script });
+    defer std.testing.allocator.free(node.stdout);
+    defer std.testing.allocator.free(node.stderr);
+    try expectExit0(node);
+
+    var parsed = try parseJson(bytes1);
+    defer parsed.deinit();
+    try std.testing.expect(parsed.value == .object);
+    try std.testing.expectEqual(@as(usize, 2), parsed.value.object.count());
+    const cookies = parsed.value.object.get("cookies").?.array.items;
+    try std.testing.expectEqual(@as(usize, 4), cookies.len);
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.object.get("origins").?.array.items.len);
+    try std.testing.expectEqualStrings("a", cookies[0].object.get("name").?.string);
+    try std.testing.expectEqualStrings(".example.com", cookies[0].object.get("domain").?.string);
+    try std.testing.expectEqualStrings("/a", cookies[0].object.get("path").?.string);
+    try std.testing.expectEqual(@as(i64, -1), cookies[0].object.get("expires").?.integer);
+    try std.testing.expect(cookies[0].object.get("secure").?.bool);
+    try std.testing.expect(cookies[0].object.get("httpOnly").?.bool);
+    try std.testing.expectEqualStrings("Lax", cookies[0].object.get("sameSite").?.string);
+    try std.testing.expectEqual(@as(i64, 1750000000), cookies[1].object.get("expires").?.integer);
+    try std.testing.expectEqualStrings("Strict", cookies[1].object.get("sameSite").?.string);
+    try std.testing.expectEqualStrings("None", cookies[2].object.get("sameSite").?.string);
+    try std.testing.expect(!cookies[3].object.contains("sameSite"));
+}
+
+test "VAL-PLAYWRIGHT-013 empty input yields exact storage state object" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const out_path = try tmpPath(&tmp, &.{"empty-state.json"});
+    defer std.testing.allocator.free(out_path);
+
+    const res = try run(std.testing.allocator, &.{ exe, "export", "--inline-json", "[]", "--format", "playwright", "--output", out_path });
+    defer std.testing.allocator.free(res.stdout);
+    defer std.testing.allocator.free(res.stderr);
+    try expectExit0(res);
+    const bytes = try readFile(out_path);
+    defer std.testing.allocator.free(bytes);
+    try std.testing.expectEqualStrings("{\"cookies\":[],\"origins\":[]}", bytes);
+}
+
+test "VAL-PLAYWRIGHT-015 and VAL-PLAYWRIGHT-016 source unchanged and filters flow through" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const db_path = try tmpPath(&tmp, &.{"Cookies"});
+    defer std.testing.allocator.free(db_path);
+    try buildChromiumDb(db_path);
+    const before = try fileState(db_path);
+    const out_path = try tmpPath(&tmp, &.{"chrome-state.json"});
+    defer std.testing.allocator.free(out_path);
+    const tmp_root = try tmp.dir.realpathAlloc(std.testing.allocator, ".");
+    defer std.testing.allocator.free(tmp_root);
+
+    const res = try runWithTmp(std.testing.allocator, &.{ exe, "export", "--browser", "chrome", "--chrome-cookies-db", db_path, "--all-domains", "--include-expired", "--url", "https://example.com/", "--name", "sid", "--format", "playwright", "--output", out_path }, tmp_root);
+    defer std.testing.allocator.free(res.stdout);
+    defer std.testing.allocator.free(res.stderr);
+    try expectExit0(res);
+    try expectUnchanged(db_path, before);
+    try assertMode0600(out_path);
+    const bytes = try readFile(out_path);
+    defer std.testing.allocator.free(bytes);
+    var parsed = try parseJson(bytes);
+    defer parsed.deinit();
+    const cookies = parsed.value.object.get("cookies").?.array.items;
+    try std.testing.expectEqual(@as(usize, 1), cookies.len);
+    try std.testing.expectEqualStrings("sid", cookies[0].object.get("name").?.string);
+    try std.testing.expectEqualStrings(".example.com", cookies[0].object.get("domain").?.string);
 }
