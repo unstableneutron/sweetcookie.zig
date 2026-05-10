@@ -24,6 +24,9 @@ pub const safari = struct {
     pub const binarycookies = @import("safari/binarycookies.zig");
 };
 pub const chromium = struct {
+    pub const root = @import("chromium/root.zig");
+    pub const db = @import("chromium/db.zig");
+    pub const paths = @import("chromium/paths.zig");
     pub const crypto = @import("chromium/crypto.zig");
     pub const secret_macos = @import("chromium/secret_macos.zig");
     pub const secret_linux = @import("chromium/secret_linux.zig");
@@ -43,9 +46,11 @@ pub const Result = ResultMod.Result;
 
 pub fn get(allocator: std.mem.Allocator, options: Options) !Result {
     var cookies = try allocator.alloc(Cookie, 0);
+    var warnings = try allocator.alloc(Warning, 0);
     errdefer {
         for (cookies) |c| c.deinit(allocator);
         allocator.free(cookies);
+        freeWarnings(allocator, warnings);
     }
 
     if (options.inline_input.json) |json| {
@@ -70,7 +75,11 @@ pub fn get(allocator: std.mem.Allocator, options: Options) !Result {
                 const parsed = try safari.root.collect(allocator, options);
                 cookies = try appendCookies(allocator, cookies, parsed);
             },
-            else => {},
+            .chrome, .chromium, .edge, .brave, .vivaldi, .opera, .arc => {
+                const parsed = try chromium.root.collect(allocator, options, browser);
+                cookies = try appendCookies(allocator, cookies, parsed.cookies);
+                warnings = try appendWarnings(allocator, warnings, parsed.warnings);
+            },
         }
     }
 
@@ -87,7 +96,7 @@ pub fn get(allocator: std.mem.Allocator, options: Options) !Result {
 
     return .{
         .cookies = cookies,
-        .warnings = try allocator.alloc(Warning, 0),
+        .warnings = warnings,
     };
 }
 
@@ -110,6 +119,30 @@ fn appendCookies(allocator: std.mem.Allocator, existing: []Cookie, added: []Cook
 fn freeCookies(allocator: std.mem.Allocator, cookies: []Cookie) void {
     for (cookies) |c| c.deinit(allocator);
     allocator.free(cookies);
+}
+
+fn appendWarnings(allocator: std.mem.Allocator, existing: []Warning, added: []Warning) ![]Warning {
+    const out = try allocator.alloc(Warning, existing.len + added.len);
+    var i: usize = 0;
+    for (existing) |w| {
+        out[i] = w;
+        i += 1;
+    }
+    for (added) |w| {
+        out[i] = w;
+        i += 1;
+    }
+    allocator.free(existing);
+    allocator.free(added);
+    return out;
+}
+
+fn freeWarnings(allocator: std.mem.Allocator, warnings: []Warning) void {
+    for (warnings) |warning| {
+        allocator.free(warning.kind);
+        allocator.free(warning.message);
+    }
+    allocator.free(warnings);
 }
 
 test "public API get runs inline then filter and dedupe" {

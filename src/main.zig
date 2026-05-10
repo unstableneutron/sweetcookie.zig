@@ -92,6 +92,9 @@ fn runExport(allocator: std.mem.Allocator, parsed: Parsed) !void {
     if (!hasInputSource(parsed.options)) {
         return error.NoInputSource;
     }
+    if (requiresAllDomains(parsed.options)) {
+        return usageErrorFmt("chromium broad export requires --all-domains\n", .{});
+    }
 
     const result = try sweetcookie.get(allocator, parsed.options);
     defer result.deinit(allocator);
@@ -154,8 +157,25 @@ fn hasInputSource(options: sweetcookie.Options) bool {
     for (options.browsers) |browser| {
         if (browser == .firefox) return true;
         if (browser == .safari) return true;
+        if (isChromium(browser)) return true;
     }
     return false;
+}
+
+fn requiresAllDomains(options: sweetcookie.Options) bool {
+    if (options.all_domains) return false;
+    if (options.url != null or options.origins.len != 0 or options.names.len != 0) return false;
+    for (options.browsers) |browser| {
+        if (isChromium(browser)) return true;
+    }
+    return false;
+}
+
+fn isChromium(browser: sweetcookie.Browser) bool {
+    return switch (browser) {
+        .chrome, .chromium, .edge, .brave, .vivaldi, .opera, .arc => true,
+        else => false,
+    };
 }
 
 fn renderRuntimeError(allocator: std.mem.Allocator, err: anyerror, parsed: Parsed) !void {
@@ -183,7 +203,8 @@ fn renderRuntimeError(allocator: std.mem.Allocator, err: anyerror, parsed: Parse
         error.FirefoxProfileNotFound => try printErr("Firefox profile not found in profiles.ini\n", .{}),
         error.RealBrowserNotPermitted => try printErr("default browser profile discovery requires SWEETCOOKIE_ALLOW_REAL_BROWSER=1\n", .{}),
         error.SafariDefaultDiscoveryDarwinOnly => try printErr("Safari default cookie discovery is darwin/macOS-only; pass --safari-cookies-file on this platform\n", .{}),
-        error.NotADatabase => try printErr("not a database\n", .{}),
+        error.NotADatabase, error.Corrupt, error.SqlError => try printErr("not a database\n", .{}),
+        error.CannotOpen => try printErr("file not found or cannot open\n", .{}),
         error.MissingUrl => try printErr("header subcommand requires --url\n", .{}),
         error.NoInputSource => try printErr("no input source provided; pass --inline-json/--inline-file/--inline-base64 or a --browser flag\n", .{}),
         else => try printErr("runtime error: {s}\n", .{@errorName(err)}),

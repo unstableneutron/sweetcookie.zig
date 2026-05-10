@@ -97,13 +97,13 @@ test "header without url names url flag" {
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "--url") != null);
 }
 
-test "header browser no source exits cleanly without leak diagnostics" {
+test "header browser default discovery is gated without leak diagnostics" {
     const res = try run(std.testing.allocator, &.{ "zig-out/bin/sweetcookie", "header", "--browser", "chrome", "--url", "https://example.com/", "--all-domains" });
     defer std.testing.allocator.free(res.stdout);
     defer std.testing.allocator.free(res.stderr);
     try std.testing.expect(res.term == .Exited);
     try std.testing.expect(res.term.Exited != 0);
-    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "no input source") != null);
+    try std.testing.expect(std.mem.indexOf(u8, res.stderr, "SWEETCOOKIE_ALLOW_REAL_BROWSER=1") != null);
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "error(gpa)") == null);
     try std.testing.expect(std.mem.indexOf(u8, res.stderr, "leak") == null);
 }
