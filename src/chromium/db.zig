@@ -129,7 +129,7 @@ pub fn decryptChromiumValue(
 }
 
 fn decryptPayload(allocator: std.mem.Allocator, key: []const u8, payload: []const u8) ![]u8 {
-    if (key.len >= 32 and payload.len >= 28) {
+    if (payload.len >= 28 and key.len != 16) {
         return decryptGcm(allocator, key, payload) catch |gcm_err| {
             if (payload.len % 16 == 0) {
                 return decryptCbc(allocator, key, payload) catch return gcm_err;
@@ -141,14 +141,14 @@ fn decryptPayload(allocator: std.mem.Allocator, key: []const u8, payload: []cons
 }
 
 fn decryptCbc(allocator: std.mem.Allocator, key: []const u8, payload: []const u8) ![]u8 {
-    if (key.len < 16) return error.InvalidKeyLength;
-    if (key.len == 16 or key.len == 32) return crypto.aes128_cbc_decrypt(allocator, key[0..16], &([_]u8{' '} ** 16), payload);
+    if (key.len == 16) return crypto.aes128_cbc_decrypt(allocator, key, &([_]u8{' '} ** 16), payload);
     const derived = try crypto.pbkdf2_hmac_sha1(allocator, key, "saltysalt", 1003, 16);
     defer allocator.free(derived);
     return crypto.aes128_cbc_decrypt(allocator, derived, &([_]u8{' '} ** 16), payload);
 }
 
 fn decryptGcm(allocator: std.mem.Allocator, key: []const u8, payload: []const u8) ![]u8 {
+    if (key.len < 32) return error.InvalidKeyLength;
     if (payload.len < 28) return error.InvalidCiphertextLength;
     const nonce = payload[0..12];
     const ciphertext = payload[12 .. payload.len - 16];
@@ -192,6 +192,41 @@ test "decryptChromiumValue derives CBC key from Safe Storage secret" {
     const decrypted = try decryptChromiumValue(std.testing.allocator, encrypted, secret, "example.com", 23);
     defer std.testing.allocator.free(decrypted);
     try std.testing.expectEqualStrings("pbkdf2 decrypted value", decrypted);
+}
+
+test "decryptChromiumValue derives CBC key from raw peanuts Safe Storage secret" {
+    if (builtin.os.tag != .macos and builtin.os.tag != .linux and builtin.os.tag != .windows) return error.SkipZigTest;
+
+    const secret = "peanuts";
+    const derived = try crypto.pbkdf2_hmac_sha1(std.testing.allocator, secret, "saltysalt", 1003, 16);
+    defer std.testing.allocator.free(derived);
+    const default_key = try crypto.chromium_default_mac_key(std.testing.allocator);
+    defer std.testing.allocator.free(default_key);
+    try std.testing.expectEqualSlices(u8, default_key, derived);
+
+    const payload = try encryptCbcForTest(std.testing.allocator, derived, "peanuts cbc plaintext");
+    defer std.testing.allocator.free(payload);
+    const encrypted = try std.mem.concat(std.testing.allocator, u8, &.{ "v10", payload });
+    defer std.testing.allocator.free(encrypted);
+
+    const decrypted = try decryptChromiumValue(std.testing.allocator, encrypted, secret, "example.com", 0);
+    defer std.testing.allocator.free(decrypted);
+    try std.testing.expectEqualStrings("peanuts cbc plaintext", decrypted);
+}
+
+test "decryptChromiumValue derives CBC key from non-GCM-shaped 32-byte secret" {
+    const secret = "12345678901234567890123456789012";
+    const derived = try crypto.pbkdf2_hmac_sha1(std.testing.allocator, secret, "saltysalt", 1003, 16);
+    defer std.testing.allocator.free(derived);
+
+    const payload = try encryptCbcForTest(std.testing.allocator, derived, "cbc payload from 32 byte secret");
+    defer std.testing.allocator.free(payload);
+    const encrypted = try std.mem.concat(std.testing.allocator, u8, &.{ "v11", payload });
+    defer std.testing.allocator.free(encrypted);
+
+    const decrypted = try decryptChromiumValue(std.testing.allocator, encrypted, secret, "example.com", 0);
+    defer std.testing.allocator.free(decrypted);
+    try std.testing.expectEqualStrings("cbc payload from 32 byte secret", decrypted);
 }
 
 fn encryptCbcForTest(allocator: std.mem.Allocator, key: []const u8, plaintext: []const u8) ![]u8 {

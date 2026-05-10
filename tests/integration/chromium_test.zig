@@ -174,7 +174,12 @@ fn cbcBlob(allocator: std.mem.Allocator, prefix: []const u8, key: []const u8, pl
     errdefer allocator.free(out);
     @memcpy(out[0..prefix.len], prefix);
     var previous = [_]u8{' '} ** 16;
-    const aes = std.crypto.core.aes.Aes128.initEnc(key[0..16].*);
+    var derived: [16]u8 = undefined;
+    const aes_key: []const u8 = if (key.len == 16) key else blk: {
+        try std.crypto.pwhash.pbkdf2(&derived, key, "saltysalt", 1003, std.crypto.auth.hmac.HmacSha1);
+        break :blk derived[0..];
+    };
+    const aes = std.crypto.core.aes.Aes128.initEnc(aes_key[0..16].*);
     var offset: usize = 0;
     while (offset < padded.len) : (offset += 16) {
         var block: [16]u8 = undefined;
