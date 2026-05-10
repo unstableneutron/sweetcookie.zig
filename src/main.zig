@@ -153,6 +153,7 @@ fn hasInputSource(options: sweetcookie.Options) bool {
     if (options.inline_input.json != null or options.inline_input.base64 != null or options.inline_input.file != null) return true;
     for (options.browsers) |browser| {
         if (browser == .firefox) return true;
+        if (browser == .safari) return true;
     }
     return false;
 }
@@ -180,7 +181,8 @@ fn renderRuntimeError(allocator: std.mem.Allocator, err: anyerror, parsed: Parse
         },
         error.MissingProfilesIni => try printErr("profiles.ini not found under Firefox profile root\n", .{}),
         error.FirefoxProfileNotFound => try printErr("Firefox profile not found in profiles.ini\n", .{}),
-        error.RealBrowserNotPermitted => try printErr("default Firefox profile discovery requires SWEETCOOKIE_ALLOW_REAL_BROWSER=1\n", .{}),
+        error.RealBrowserNotPermitted => try printErr("default browser profile discovery requires SWEETCOOKIE_ALLOW_REAL_BROWSER=1\n", .{}),
+        error.SafariDefaultDiscoveryDarwinOnly => try printErr("Safari default cookie discovery is darwin/macOS-only; pass --safari-cookies-file on this platform\n", .{}),
         error.NotADatabase => try printErr("not a database\n", .{}),
         error.MissingUrl => try printErr("header subcommand requires --url\n", .{}),
         error.NoInputSource => try printErr("no input source provided; pass --inline-json/--inline-file/--inline-base64 or a --browser flag\n", .{}),

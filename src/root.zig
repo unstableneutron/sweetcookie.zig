@@ -19,6 +19,8 @@ pub const firefox = struct {
     pub const paths = @import("firefox/paths.zig");
 };
 pub const safari = struct {
+    pub const root = @import("safari/root.zig");
+    pub const paths = @import("safari/paths.zig");
     pub const binarycookies = @import("safari/binarycookies.zig");
 };
 
@@ -56,6 +58,10 @@ pub fn get(allocator: std.mem.Allocator, options: Options) !Result {
         switch (browser) {
             .firefox => {
                 const parsed = try firefox.root.collect(allocator, options);
+                cookies = try appendCookies(allocator, cookies, parsed);
+            },
+            .safari => {
+                const parsed = try safari.root.collect(allocator, options);
                 cookies = try appendCookies(allocator, cookies, parsed);
             },
             else => {},
